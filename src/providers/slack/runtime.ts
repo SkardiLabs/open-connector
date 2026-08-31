@@ -234,11 +234,15 @@ async function slackGetChannelMessages(input: Record<string, unknown>, context: 
   if (input.limit != null) {
     url.searchParams.set("limit", String(input.limit));
   }
+  if (input.cursor != null) {
+    url.searchParams.set("cursor", String(input.cursor));
+  }
 
   const payload = await slackGetJson<{
     ok: boolean;
     messages?: Array<{ ts: string; user?: string; text?: string }>;
     has_more?: boolean;
+    response_metadata?: { next_cursor?: string };
     error?: string;
   }>(url, context);
 
@@ -249,6 +253,7 @@ async function slackGetChannelMessages(input: Record<string, unknown>, context: 
       text: message.text ?? "",
     })),
     hasMore: payload.has_more ?? false,
+    nextCursor: payload.response_metadata?.next_cursor ?? "",
   };
 }
 
