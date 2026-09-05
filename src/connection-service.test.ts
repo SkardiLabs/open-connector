@@ -199,6 +199,9 @@ describe("ConnectionService", () => {
       connectionName: "marketplace_community",
       authType: "marketplace",
     });
+    expect(await service.getConnectionSummary("uptimerobot", "marketplace_community")).not.toHaveProperty(
+      "oauthAuthorizationId",
+    );
     await expect(service.getConnectionSummary("uptimerobot", "marketplace_oomol")).rejects.toMatchObject({
       code: "connection_not_found",
     });
@@ -553,6 +556,89 @@ describe("ConnectionService", () => {
     });
   });
 
+  it("exposes only OAuth authorization provenance from internal credential metadata in every summary", async () => {
+    const service = createService([oauthProvider]);
+    const summary = await service.setOAuthCredential(
+      "example",
+      {
+        authType: "oauth2",
+        accessToken: "test-access-token",
+        refreshToken: "test-refresh-token",
+        tokenType: "Bearer",
+        profile: testProfile,
+        metadata: {
+          oauthAuthorizationId: "completed-authorization",
+          oauthClientConfig: { clientId: "test-client", clientSecret: "test-client-secret" },
+          oauthClientSecretExtra: { appBearerToken: "test-app-token" },
+          providerData: "internal-only",
+        },
+      },
+      "work",
+    );
+    const expected = {
+      id: summary.id,
+      service: "example",
+      connectionName: "work",
+      authType: "oauth2",
+      configured: true,
+      virtual: false,
+      default: false,
+      profile: testProfile,
+      oauthAuthorizationId: "completed-authorization",
+    };
+
+    expect(JSON.parse(JSON.stringify(summary))).toEqual(expected);
+    expect(await service.getConnectionSummary("example", "work")).toEqual(expected);
+    expect(await service.listConnections()).toEqual([expected]);
+    expect(await service.listConnectionsByService("example")).toEqual([expected]);
+    expect((await service.resolveForExecution("example", "work")).summary).toEqual(expected);
+  });
+
+  it.each([undefined, null, 42, { nested: "not-a-string" }])(
+    "omits legacy or non-string OAuth provenance and rejects validator-supplied provenance %#",
+    async (oauthAuthorizationId) => {
+      const service = createService([oauthProvider], {
+        providerLoader: new FakeProviderLoader({
+          async oauth2() {
+            return { metadata: { oauthAuthorizationId: "validator-supplied-id" } };
+          },
+        }),
+      });
+      const summary = await service.setOAuthCredential("example", {
+        authType: "oauth2",
+        accessToken: "access-token",
+        tokenType: "Bearer",
+        profile: testProfile,
+        metadata: { oauthAuthorizationId },
+      });
+
+      expect(summary).not.toHaveProperty("oauthAuthorizationId");
+      expect(JSON.parse(JSON.stringify(await service.listConnections()))[0]).not.toHaveProperty("oauthAuthorizationId");
+    },
+  );
+
+  it("omits authorization provenance from non-OAuth credentials even when their metadata contains it", async () => {
+    const store = new MemoryConnectionStore();
+    const service = createService([apiKeyProvider, customCredentialProvider, hackernewsProvider], { store });
+    await store.set("uptimerobot", "default", {
+      authType: "api_key",
+      apiKey: "test-key",
+      values: {},
+      profile: testProfile,
+      metadata: { oauthAuthorizationId: "not-oauth" },
+    });
+    await store.set("database", "default", {
+      authType: "custom_credential",
+      values: { host: "example.com", password: "test-password" },
+      profile: testProfile,
+      metadata: { oauthAuthorizationId: "not-oauth" },
+    });
+
+    const summaries = await service.listConnections();
+    expect(summaries).toHaveLength(3);
+    for (const summary of summaries) expect(summary).not.toHaveProperty("oauthAuthorizationId");
+  });
+
   it("does not store OAuth credentials when validation is cancelled", async () => {
     const controller = new AbortController();
     let validationStarted: (() => void) | undefined;
@@ -610,7 +696,7 @@ describe("ConnectionService", () => {
       refreshToken: "refresh-token",
       expiresAt: "2026-01-01T00:00:00.000Z",
       profile: testProfile,
-      metadata: { original: true },
+      metadata: { original: true, oauthAuthorizationId: "completed-authorization" },
     });
 
     vi.stubGlobal(
@@ -618,6 +704,7 @@ describe("ConnectionService", () => {
       vi.fn(async () =>
         Response.json({
           access_token: "fresh-token",
+          oauthAuthorizationId: "provider-supplied-id",
           expires_in: 3600,
           token_type: "Bearer",
           scope: "read",
@@ -631,6 +718,7 @@ describe("ConnectionService", () => {
       refreshToken: "refresh-token",
       metadata: {
         original: true,
+        oauthAuthorizationId: "completed-authorization",
         scope: "read",
       },
     });
@@ -638,7 +726,11 @@ describe("ConnectionService", () => {
       credential: {
         authType: "oauth2",
         accessToken: "fresh-token",
+        metadata: { oauthAuthorizationId: "completed-authorization" },
       },
+    });
+    await expect(service.getConnectionSummary("example")).resolves.toMatchObject({
+      oauthAuthorizationId: "completed-authorization",
     });
     expect(fetch).toHaveBeenCalledWith(
       "https://example.com/oauth/token",

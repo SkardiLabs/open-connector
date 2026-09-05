@@ -1340,7 +1340,10 @@ describe("ConnectServer", () => {
   });
 
   it("lists OAuth connections after the callback completes", async () => {
-    const app = createTestServer([oauthProvider]).createApp();
+    const app = createTestServer([oauthProvider], {
+      allowedCustomOAuth: ["oauth_example"],
+      secretCodec: new AesGcmSecretCodec("oauth-test-key"),
+    }).createApp();
     const config = await app.request("/api/oauth/configs/oauth_example", {
       method: "PUT",
       headers: { "content-type": "application/json" },
@@ -1356,7 +1359,14 @@ describe("ConnectServer", () => {
     const authorization = await app.request("/api/oauth/authorizations", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ service: "oauth_example" }),
+      body: JSON.stringify({
+        service: "oauth_example",
+        clientConfig: {
+          clientId: "custom-client-id",
+          clientSecret: "custom-client-secret",
+          secretExtra: { appBearerToken: "custom-app-token" },
+        },
+      }),
     });
     expect(authorization.status).toBe(200);
     const { state } = (await authorization.json()) as { state: string };
@@ -1384,11 +1394,17 @@ describe("ConnectServer", () => {
     expect(callbackText).toContain("window.close()");
     const connections = await app.request("/api/connections");
     expect(connections.status).toBe(200);
-    await expect(connections.json()).resolves.toMatchObject([
+    await expect(connections.json()).resolves.toEqual([
       {
+        id: expect.any(String),
         service: "oauth_example",
+        connectionName: "default",
         authType: "oauth2",
         configured: true,
+        virtual: false,
+        default: true,
+        profile: { accountId: "oauth2", displayName: "OAuth Credential", grantedScopes: [] },
+        oauthAuthorizationId: state,
       },
     ]);
   });
