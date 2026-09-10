@@ -318,9 +318,28 @@ async function listDrivePermissions(input: Record<string, unknown>, request: Fei
       perm_type: optionalString(input.permType),
     },
   });
-  return {
-    members: Array.isArray(data.members) ? data.members : [],
-  };
+  // Feishu answers `GET /drive/v1/permissions/:token/members` with the
+  // collaborators under `data.items`, not `data.members`. Reading the output
+  // name as if it were the upstream key missed every time and the `: []`
+  // below turned the miss into a successful empty list — so every docx ACL
+  // read through this build reported that nobody has access, with
+  // `success: true`.
+  //
+  // Every other list endpoint in this file already names the upstream key
+  // explicitly (`normalizePage(data, "files")`, `normalizePage(data,
+  // "items")`); this one assumed it matched the field it returns, and was
+  // the only place that did.
+  //
+  // `members` is still accepted after `items`, so a future upstream that
+  // renames the key does not break this again in the other direction. The
+  // empty fallback stays: Feishu omits the key for a genuinely empty list,
+  // and throwing there would fail every unshared document.
+  const rows = Array.isArray(data.items)
+    ? data.items
+    : Array.isArray(data.members)
+      ? data.members
+      : [];
+  return { members: rows };
 }
 
 async function addDrivePermission(input: Record<string, unknown>, request: FeishuJsonRequest) {
