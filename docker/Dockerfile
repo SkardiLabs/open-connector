@@ -24,7 +24,8 @@ COPY migrations ./migrations
 COPY --from=build /app/src ./src
 COPY --from=build /app/catalog ./catalog
 COPY --from=build /app/dist ./dist
-COPY --chmod=755 docker/entrypoint.sh /usr/local/bin/open-connector
+COPY docker/entrypoint.sh /usr/local/bin/open-connector
+RUN chmod 755 /usr/local/bin/open-connector
 
 RUN npm ci --omit=dev --ignore-scripts
 VOLUME ["/app/data"]
