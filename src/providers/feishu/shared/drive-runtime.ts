@@ -334,11 +334,7 @@ async function listDrivePermissions(input: Record<string, unknown>, request: Fei
   // renames the key does not break this again in the other direction. The
   // empty fallback stays: Feishu omits the key for a genuinely empty list,
   // and throwing there would fail every unshared document.
-  const rows = Array.isArray(data.items)
-    ? data.items
-    : Array.isArray(data.members)
-      ? data.members
-      : [];
+  const rows = Array.isArray(data.items) ? data.items : Array.isArray(data.members) ? data.members : [];
   return { members: rows };
 }
 

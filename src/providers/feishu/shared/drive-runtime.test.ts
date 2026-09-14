@@ -46,9 +46,7 @@ describe("Feishu drive permissions", () => {
     await expect(handlers.list_drive_permissions(input)).resolves.toEqual({
       members: permissionsResponse.items,
     });
-    expect(calls).toEqual([
-      { path: "/drive/v1/permissions/LgGKde9RcoB5boxJ8wecirJOnAd/members" },
-    ]);
+    expect(calls).toEqual([{ path: "/drive/v1/permissions/LgGKde9RcoB5boxJ8wecirJOnAd/members" }]);
   });
 
   /** Accepted after `items`, so a rename cannot break this the other way. */
