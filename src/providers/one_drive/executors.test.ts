@@ -336,15 +336,40 @@ describe("OneDrive item permissions", () => {
     });
   });
 
-  it("keeps the identities a specific-people link was shared with", async () => {
+  it("keeps a specific-people link's identities, which carry no id at all", async () => {
+    // **The measured shape**, 2026-09-17, a specific-people link on a personal
+    // drive (address redacted). The first version of this test invented
+    // `{ id: "u3", displayName: "Alan" }` — an identity with an id and a human
+    // name. The wire sends neither:
+    //
+    //   * there is **no `id`**. Not a site index, not a GUID, not a CID. A
+    //     consumer keying a grantee on an id has nothing to key on.
+    //   * `displayName` IS the address, which is the unredeemed-invitation
+    //     tell: Microsoft has no account to name yet.
+    //   * the member key is **`user`**, while the owner's direct grant in
+    //     `grantedToV2` uses **`siteUser`**. Same identity-set type, two
+    //     different members, decided by which container it sits in.
+    //
+    // An invented fixture would have let a consumer build against a field the
+    // provider never sends, which is the whole reason this one is measured.
     stubResponses([
       Response.json({
         value: [
           {
-            id: "perm-3",
+            id: "ef759386-fa2e-47db-adff-f9635ef5115b",
             roles: ["read"],
-            link: { type: "view", scope: "users" },
-            grantedToIdentitiesV2: [{ user: { id: "u3", displayName: "Alan" } }],
+            hasPassword: false,
+            grantedToIdentitiesV2: [
+              {
+                user: {
+                  "@odata.type": "#microsoft.graph.sharePointIdentity",
+                  displayName: "someone@example.com",
+                  email: "someone@example.com",
+                },
+              },
+            ],
+            grantedToIdentities: [{ user: { displayName: "someone@example.com", email: "someone@example.com" } }],
+            link: { scope: "users", type: "view", preventsDownload: false },
           },
         ],
       }),
@@ -352,12 +377,69 @@ describe("OneDrive item permissions", () => {
 
     const result = await executeOneDriveAction("list_item_permissions", { itemId: "item-3" });
 
+    expect(result).toEqual({
+      ok: true,
+      output: {
+        items: [
+          {
+            id: "ef759386-fa2e-47db-adff-f9635ef5115b",
+            roles: ["read"],
+            hasPassword: false,
+            grantedToIdentitiesV2: [
+              {
+                user: {
+                  "@odata.type": "#microsoft.graph.sharePointIdentity",
+                  displayName: "someone@example.com",
+                  email: "someone@example.com",
+                },
+              },
+            ],
+            grantedToIdentities: [{ user: { displayName: "someone@example.com", email: "someone@example.com" } }],
+            link: { scope: "users", type: "view", preventsDownload: false },
+          },
+        ],
+        nextLink: null,
+      },
+    });
+  });
+
+  it("keeps an anonymous link's EMPTY identity arrays, which are present and not absent", async () => {
+    // Measured on the same file: OneDrive personal's default share is an
+    // anonymous link. The arrays arrive empty rather than missing, so testing
+    // for the key is not a test for "somebody is granted" — and there is no
+    // `grantedTo` on the entry at all.
+    stubResponses([
+      Response.json({
+        value: [
+          {
+            id: "10db1af6-12db-4ab8-93b7-acf0aadc5fb8",
+            roles: ["read"],
+            hasPassword: false,
+            grantedToIdentitiesV2: [],
+            grantedToIdentities: [],
+            link: { scope: "anonymous", type: "view", preventsDownload: false },
+          },
+        ],
+      }),
+    ]);
+
+    const result = await executeOneDriveAction("list_item_permissions", { itemId: "item-anon" });
+
     expect(result).toMatchObject({
       ok: true,
       output: {
-        items: [{ grantedToIdentitiesV2: [{ user: { id: "u3", displayName: "Alan" } }] }],
+        items: [
+          {
+            grantedToIdentitiesV2: [],
+            grantedToIdentities: [],
+            link: { scope: "anonymous" },
+          },
+        ],
       },
     });
+    const [item] = (result as { output: { items: Record<string, unknown>[] } }).output.items;
+    expect(item, "an anonymous link names nobody").not.toHaveProperty("grantedTo");
+    expect(item).not.toHaveProperty("grantedToV2");
   });
 
   it("addresses an item by path, and a named drive", async () => {
