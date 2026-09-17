@@ -214,11 +214,13 @@ describe("OneDrive item permissions", () => {
     //
     // What this pins is the ROUND TRIP — a personal-shaped permission reaches
     // the caller with its attribution intact. It does NOT pin the schema
-    // declaration: `permission` is a `looseObject`, so an undeclared field
-    // passes through anyway and removing `grantedTo` from `actions.ts` leaves
-    // this test green (checked). The declaration earns its place in the
-    // published catalog, which is what an SDK consumer reads to learn the
-    // field exists at all.
+    // declaration: output schemas are not enforced on the way out, so removing
+    // `grantedTo` from `actions.ts` leaves this test green (checked). The
+    // declaration earns its place in the published catalog, which is what an
+    // SDK consumer reads to learn the field exists at all.
+    //
+    // The hand-built shape below is the DOCUMENTED one. The measured one is
+    // the test after next, and the two disagree — see it.
     stubResponses([
       Response.json({
         value: [
@@ -246,6 +248,90 @@ describe("OneDrive item permissions", () => {
             inheritedFrom: { id: "parent-1" },
           },
         ],
+      },
+    });
+  });
+
+  it("returns a real personal-drive owner permission verbatim, siteUser and all", async () => {
+    // **The measured shape**, from one real personal OneDrive on 2026-09-17
+    // (the address is redacted; nothing else is changed). It is here because
+    // every part of it contradicts what the documented resource suggests:
+    //
+    //   * `grantedToV2` IS present on a personal drive — the deprecated
+    //     `grantedTo` is not a substitute for it, both arrive — but it carries
+    //     `siteUser`, NOT `user`. A consumer reading `grantedToV2.user` finds
+    //     nothing and silently falls through.
+    //   * `user.id` is `"4"`. That is a SharePoint site-local user index, not
+    //     a directory object id: `loginName` is the claims encoding that says
+    //     so, and the drive's own `createdBy.user.id` on the same account is
+    //     the 16-hex CID instead. Two id spaces, one drive, two endpoints.
+    //   * the only identifier that is the same person anywhere else is the
+    //     EMAIL, which also appears inside `loginName` and, base64url-encoded,
+    //     as `id` and `shareId`.
+    //
+    // This action returns all of it and decides none of it. Which field a
+    // consumer keys on is a consumer's decision, and it cannot make a good one
+    // against a shape it never sees.
+    //
+    // What this test pins is the RETURN PATH: `readCollectionItems` hands the
+    // page's items back untouched, including fields no schema names —
+    // `siteUser.email` and `siteUser.loginName` are not in `identity`, and
+    // they arrive anyway. It does NOT pin the schema declarations: output
+    // schemas are not enforced on the way out here, and making either
+    // `permission` or `identity` strict (`s.object`, `additionalProperties:
+    // false`) leaves every test in this file green (checked). The declarations
+    // are the PUBLISHED CATALOG's contract — what an SDK consumer generates
+    // types from — not a runtime guard, and reading them as one is the wrong
+    // assumption to inherit from this file.
+    stubResponses([
+      Response.json({
+        value: [
+          {
+            id: "aTowIy5mfG1lbWJlcnNoaXB8c29tZW9uZUBleGFtcGxlLmNvbQ",
+            roles: ["owner"],
+            shareId: "aTowIy5mfG1lbWJlcnNoaXB8c29tZW9uZUBleGFtcGxlLmNvbQ",
+            grantedToV2: {
+              siteUser: {
+                displayName: "Example Owner",
+                email: "someone@example.com",
+                id: "4",
+                loginName: "i:0#.f|membership|someone@example.com",
+              },
+            },
+            grantedTo: {
+              user: { displayName: "Example Owner", email: "someone@example.com", id: "4" },
+            },
+            link: { webUrl: "https://1drv.ms/f/c/EXAMPLECID/AsExampleShareToken" },
+          },
+        ],
+      }),
+    ]);
+
+    const result = await executeOneDriveAction("list_item_permissions", { itemId: "item-owner" });
+
+    expect(result).toEqual({
+      ok: true,
+      output: {
+        items: [
+          {
+            id: "aTowIy5mfG1lbWJlcnNoaXB8c29tZW9uZUBleGFtcGxlLmNvbQ",
+            roles: ["owner"],
+            shareId: "aTowIy5mfG1lbWJlcnNoaXB8c29tZW9uZUBleGFtcGxlLmNvbQ",
+            grantedToV2: {
+              siteUser: {
+                displayName: "Example Owner",
+                email: "someone@example.com",
+                id: "4",
+                loginName: "i:0#.f|membership|someone@example.com",
+              },
+            },
+            grantedTo: {
+              user: { displayName: "Example Owner", email: "someone@example.com", id: "4" },
+            },
+            link: { webUrl: "https://1drv.ms/f/c/EXAMPLECID/AsExampleShareToken" },
+          },
+        ],
+        nextLink: null,
       },
     });
   });
