@@ -169,6 +169,7 @@ const permission = s.looseObject(
     // "shared here" and "shared above"; a consumer that ignores it cannot
     // tell a folder's own sharing from its parent's.
     inheritedFrom: driveItemReference,
+
     shareId: s.string({ description: "Opaque sharing ID for this permission." }),
     hasPassword: s.boolean({ description: "Whether a link permission is password protected." }),
     expirationDateTime: s.string({ description: "When this permission expires, if it does." }),

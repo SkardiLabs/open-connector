@@ -403,6 +403,67 @@ describe("OneDrive item permissions", () => {
     });
   });
 
+  it("keeps an inherited grant's inheritedFrom, which is the only thing that says where it came from", async () => {
+    // Measured 2026-09-17 on a child of a shared folder (identifiers
+    // redacted, shapes intact). This is the entry a consumer needs most and
+    // the one most easily lost:
+    //
+    //   * `inheritedFrom` is PRESENT on a personal drive, and it is the only
+    //     field distinguishing "granted on this file" from "granted on an
+    //     ancestor". Nothing else in the entry says.
+    //   * it is richer than the documented `itemReference` — it carries
+    //     `shareId` and a whole `sharepointIds` object, neither of which any
+    //     schema here names. They survive because the action returns the page
+    //     verbatim.
+    //   * the inherited entry carries the SAME `id` and `shareId` as the
+    //     folder's own entry, which is the third place a permission id turns
+    //     out not to be per-item.
+    stubResponses([
+      Response.json({
+        value: [
+          {
+            id: "9c7284f8-655c-47f5-8cac-b54b4846300b",
+            roles: ["read"],
+            hasPassword: false,
+            grantedToIdentitiesV2: [{ user: { displayName: "someone@example.com", email: "someone@example.com" } }],
+            grantedToIdentities: [{ user: { displayName: "someone@example.com", email: "someone@example.com" } }],
+            inheritedFrom: {
+              driveId: "EXAMPLECID",
+              driveType: "personal",
+              id: "EXAMPLECID!s4c54abc634f4204d8071f30f00000000",
+              name: "Downloads",
+              path: "/drives/EXAMPLECID/root:/Docs/Downloads",
+              shareId: "u!aHR0cHM6Ly9leGFtcGxl",
+              sharepointIds: {
+                listItemId: "4081",
+                listItemUniqueId: "4c54abc6-34f4-204d-8071-f30f00000000",
+              },
+            },
+            link: { scope: "users", type: "view", preventsDownload: false },
+          },
+        ],
+      }),
+    ]);
+
+    const result = await executeOneDriveAction("list_item_permissions", { itemId: "child-1" });
+    const [item] = (result as { output: { items: Record<string, unknown>[] } }).output.items;
+
+    expect(item!.inheritedFrom).toEqual({
+      driveId: "EXAMPLECID",
+      driveType: "personal",
+      id: "EXAMPLECID!s4c54abc634f4204d8071f30f00000000",
+      name: "Downloads",
+      path: "/drives/EXAMPLECID/root:/Docs/Downloads",
+      // Undeclared by `driveItemReference` and returned anyway — the property
+      // that makes this action safe to build an admission rule on.
+      shareId: "u!aHR0cHM6Ly9leGFtcGxl",
+      sharepointIds: {
+        listItemId: "4081",
+        listItemUniqueId: "4c54abc6-34f4-204d-8071-f30f00000000",
+      },
+    });
+  });
+
   it("keeps an anonymous link's EMPTY identity arrays, which are present and not absent", async () => {
     // Measured on the same file: OneDrive personal's default share is an
     // anonymous link. The arrays arrive empty rather than missing, so testing
