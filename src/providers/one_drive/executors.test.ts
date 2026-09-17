@@ -185,6 +185,154 @@ describe("OneDrive transit downloads", () => {
   });
 });
 
+describe("OneDrive item permissions", () => {
+  it("reads the permissions of an item by id, and reports the end of the list", async () => {
+    const requests = stubResponses([
+      Response.json({
+        value: [{ id: "perm-1", roles: ["read"], grantedToV2: { user: { id: "u1", displayName: "Ada" } } }],
+      }),
+    ]);
+
+    const result = await executeOneDriveAction("list_item_permissions", { itemId: "item-1" });
+
+    expect(requests[0]!.url.pathname).toBe("/v1.0/me/drive/items/item-1/permissions");
+    expect(result).toEqual({
+      ok: true,
+      output: {
+        items: [{ id: "perm-1", roles: ["read"], grantedToV2: { user: { id: "u1", displayName: "Ada" } } }],
+        // Absent `@odata.nextLink` is the end of the list, and it is reported
+        // as an explicit null rather than an omitted key: a consumer cannot
+        // tell an omitted cursor from a response shape it failed to read.
+        nextLink: null,
+      },
+    });
+  });
+
+  it("returns a personal drive's permission unchanged, both spellings included", async () => {
+    // Measured: a personal OneDrive returns `grantedTo` and omits
+    // `grantedToV2` entirely, while a work or school drive does the opposite.
+    //
+    // What this pins is the ROUND TRIP — a personal-shaped permission reaches
+    // the caller with its attribution intact. It does NOT pin the schema
+    // declaration: `permission` is a `looseObject`, so an undeclared field
+    // passes through anyway and removing `grantedTo` from `actions.ts` leaves
+    // this test green (checked). The declaration earns its place in the
+    // published catalog, which is what an SDK consumer reads to learn the
+    // field exists at all.
+    stubResponses([
+      Response.json({
+        value: [
+          {
+            id: "perm-2",
+            roles: ["owner"],
+            grantedTo: { user: { id: "u2", displayName: "Grace" } },
+            inheritedFrom: { driveId: "d1", id: "parent-1", path: "/drive/root:" },
+          },
+        ],
+      }),
+    ]);
+
+    const result = await executeOneDriveAction("list_item_permissions", { itemId: "item-2" });
+
+    expect(result).toMatchObject({
+      ok: true,
+      output: {
+        items: [
+          {
+            grantedTo: { user: { id: "u2", displayName: "Grace" } },
+            // `inheritedFrom` is personal-only and is the difference between
+            // "shared here" and "shared above"; dropping it would make a
+            // folder's own sharing indistinguishable from its parent's.
+            inheritedFrom: { id: "parent-1" },
+          },
+        ],
+      },
+    });
+  });
+
+  it("keeps the identities a specific-people link was shared with", async () => {
+    stubResponses([
+      Response.json({
+        value: [
+          {
+            id: "perm-3",
+            roles: ["read"],
+            link: { type: "view", scope: "users" },
+            grantedToIdentitiesV2: [{ user: { id: "u3", displayName: "Alan" } }],
+          },
+        ],
+      }),
+    ]);
+
+    const result = await executeOneDriveAction("list_item_permissions", { itemId: "item-3" });
+
+    expect(result).toMatchObject({
+      ok: true,
+      output: {
+        items: [{ grantedToIdentitiesV2: [{ user: { id: "u3", displayName: "Alan" } }] }],
+      },
+    });
+  });
+
+  it("addresses an item by path, and a named drive", async () => {
+    const byPath = stubResponses([Response.json({ value: [] })]);
+    await executeOneDriveAction("list_item_permissions", { itemPath: "/Reports/Q3" });
+    expect(byPath[0]!.url.pathname).toBe("/v1.0/me/drive/root:/Reports/Q3:/permissions");
+
+    const byDrive = stubResponses([Response.json({ value: [] })]);
+    await executeOneDriveAction("list_item_permissions", { driveId: "drive-9", itemId: "item-4" });
+    expect(byDrive[0]!.url.pathname).toBe("/v1.0/drives/drive-9/items/item-4/permissions");
+  });
+
+  it("follows a permission nextLink and refuses one that points elsewhere", async () => {
+    const followed = stubResponses([Response.json({ value: [{ id: "perm-4", roles: ["read"] }] })]);
+    const ok = await executeOneDriveAction("list_item_permissions", {
+      itemId: "item-5",
+      nextLink: "https://graph.microsoft.com/v1.0/me/drive/items/item-5/permissions?$skiptoken=abc",
+    });
+    expect(ok).toMatchObject({ ok: true });
+    expect(followed[0]!.url.searchParams.get("$skiptoken")).toBe("abc");
+
+    // The cursor is a string Microsoft Graph put in a response body. Following
+    // it unchecked would let one response redirect this action at any other
+    // endpoint the token can reach — a token minted to read one folder's ACL
+    // reading the signed-in user's mail, say.
+    //
+    // BOTH shapes are refused, and the second is the one that matters. A path
+    // outside the drive is caught by `readDrivePathSuffix` returning null, so
+    // a test using only that would pass with the endpoint check deleted
+    // entirely (checked). The children endpoint is a drive path that reaches
+    // the endpoint check, and it is the confusion this policy exists for:
+    // three paginated actions share one request builder.
+    for (const elsewhere of [
+      "https://graph.microsoft.com/v1.0/me/messages",
+      "https://graph.microsoft.com/v1.0/me/drive/items/item-5/children",
+    ]) {
+      const fetch = vi.fn();
+      vi.stubGlobal("fetch", fetch);
+      const refused = await executeOneDriveAction("list_item_permissions", {
+        itemId: "item-5",
+        nextLink: elsewhere,
+      });
+      expect(refused, elsewhere).toMatchObject({
+        ok: false,
+        error: { message: "nextLink must target OneDrive permission pagination endpoints" },
+      });
+      expect(fetch, elsewhere).not.toHaveBeenCalled();
+    }
+  });
+
+  it("requires an item to ask about", async () => {
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+
+    const result = await executeOneDriveAction("list_item_permissions", {});
+
+    expect(result).toMatchObject({ ok: false, error: { message: "itemId or itemPath is required" } });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+});
+
 function stubResponses(responses: Response[]): CapturedRequest[] {
   const requests: CapturedRequest[] = [];
   vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -229,10 +377,8 @@ function createTransitFileStore(maxBytes: number): {
   };
 }
 
-type OneDriveDownloadAction = "download_file" | "download_file_by_path" | "download_item_as_format";
-
 async function executeOneDriveAction(
-  actionName: OneDriveDownloadAction,
+  actionName: string,
   input: Record<string, unknown>,
   transitFiles?: TransitFileStore,
   signal?: AbortSignal,
