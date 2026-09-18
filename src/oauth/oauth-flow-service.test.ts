@@ -397,6 +397,159 @@ describe("OAuthFlowService", () => {
     await expect(services.connections.getCredential("example")).resolves.toBeUndefined();
   });
 
+  it("replaces authorization provenance only after the same account completes consent again under the same alias", async () => {
+    const services = createServices([oauthProvider], {
+      credentialValidators: {
+        async oauth2() {
+          return {
+            profile: { accountId: "same-person", displayName: "Same Person", grantedScopes: ["read"] },
+            metadata: { oauthAuthorizationId: "validator-supplied-id", verified: true },
+          };
+        },
+      },
+    });
+    await services.clientConfigs.upsertConfig({
+      service: "example",
+      clientId: "client-id",
+      clientSecret: "client-secret",
+      extra: { tenant: "default" },
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ access_token: "access-token", oauthAuthorizationId: "provider-supplied-id" })),
+    );
+
+    const first = await services.flow.startAuthorization({ service: "example", connectionName: "work" });
+    await services.flow.completeAuthorization({ state: first.state, code: "first-code" });
+    const original = await services.connections.getConnectionSummary("example", "work");
+    expect(original).toMatchObject({ oauthAuthorizationId: first.state, profile: { accountId: "same-person" } });
+
+    const second = await services.flow.startAuthorization({ service: "example", connectionName: "work" });
+    expect(second.state).not.toBe(first.state);
+    expect(await services.connections.getConnectionSummary("example", "work")).toEqual(original);
+    await expect(services.connections.getCredential("example", "work")).resolves.toMatchObject({
+      metadata: { oauthAuthorizationId: first.state },
+    });
+
+    await services.flow.completeAuthorization({ state: second.state, code: "second-code" });
+    expect(await services.connections.getConnectionSummary("example", "work")).toEqual({
+      ...original,
+      oauthAuthorizationId: second.state,
+    });
+    await expect(services.connections.getCredential("example", "work")).resolves.toMatchObject({
+      metadata: { oauthAuthorizationId: second.state, verified: true },
+    });
+    await expect(services.connections.getCredential("example")).resolves.toBeUndefined();
+  });
+
+  it("keeps provenance paired with the stored credential when an older callback finishes last", async () => {
+    const services = createServices([oauthProvider]);
+    await services.clientConfigs.upsertConfig({
+      service: "example",
+      clientId: "client-id",
+      clientSecret: "client-secret",
+      extra: { tenant: "default" },
+    });
+    let markOlderExchangeStarted!: () => void;
+    const olderExchangeStarted = new Promise<void>((resolve) => {
+      markOlderExchangeStarted = resolve;
+    });
+    let finishOlderExchange!: (response: Response) => void;
+    const olderTokenResponse = new Promise<Response>((resolve) => {
+      finishOlderExchange = resolve;
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+        if (new URLSearchParams(String(init?.body)).get("code") === "older-code") {
+          markOlderExchangeStarted();
+          return olderTokenResponse;
+        }
+        return Response.json({ access_token: "newer-access-token" });
+      }),
+    );
+
+    const older = await services.flow.startAuthorization({ service: "example", connectionName: "work" });
+    const olderCallback = services.flow.completeAuthorization({ state: older.state, code: "older-code" });
+    await olderExchangeStarted;
+    const newer = await services.flow.startAuthorization({ service: "example", connectionName: "work" });
+    await services.flow.completeAuthorization({ state: newer.state, code: "newer-code" });
+    const newerSummary = await services.connections.getConnectionSummary("example", "work");
+    expect(newerSummary).toMatchObject({ oauthAuthorizationId: newer.state });
+    await expect(services.connections.getCredential("example", "work")).resolves.toMatchObject({
+      accessToken: "newer-access-token",
+      metadata: { oauthAuthorizationId: newer.state },
+    });
+
+    // Callback writes currently follow completion order. Provenance must identify the credential actually stored.
+    finishOlderExchange(Response.json({ access_token: "older-access-token" }));
+    await olderCallback;
+    expect(await services.connections.getConnectionSummary("example", "work")).toEqual({
+      ...newerSummary,
+      oauthAuthorizationId: older.state,
+    });
+    await expect(services.connections.getCredential("example", "work")).resolves.toMatchObject({
+      accessToken: "older-access-token",
+      metadata: { oauthAuthorizationId: older.state },
+    });
+  });
+
+  it.each(["unknown state", "expired state", "rejected code", "missing access token", "cancelled callback"])(
+    "keeps prior authorization provenance after a callback with %s",
+    async (failure) => {
+      const services = createServices([oauthProvider]);
+      await services.clientConfigs.upsertConfig({
+        service: "example",
+        clientId: "client-id",
+        clientSecret: "client-secret",
+        extra: { tenant: "default" },
+      });
+      const original = await services.connections.setOAuthCredential(
+        "example",
+        {
+          authType: "oauth2",
+          accessToken: "prior-access-token",
+          tokenType: "Bearer",
+          profile: { accountId: "same-person", displayName: "Same Person", grantedScopes: [] },
+          metadata: { oauthAuthorizationId: "prior-authorization" },
+        },
+        "work",
+      );
+      const pending = await services.flow.startAuthorization({ service: "example", connectionName: "work" });
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => {
+          if (failure === "rejected code") return Response.json({ error: "invalid_grant" }, { status: 400 });
+          if (failure === "missing access token") return Response.json({ token_type: "Bearer" });
+          return Response.json({ access_token: "replacement-access-token" });
+        }),
+      );
+      if (failure === "expired state") {
+        vi.useFakeTimers();
+        vi.setSystemTime(Date.now() + 16 * 60_000);
+      }
+      await expect(
+        services.flow.completeAuthorization({
+          state: failure === "unknown state" ? "unknown-state" : pending.state,
+          code: "callback-code",
+          signal: failure === "cancelled callback" ? AbortSignal.abort() : undefined,
+        }),
+      ).rejects.toMatchObject({
+        code:
+          failure === "cancelled callback"
+            ? "connection_cancelled"
+            : failure.endsWith("state")
+              ? "invalid_oauth_state"
+              : "oauth_token_exchange_failed",
+      });
+      expect(await services.connections.getConnectionSummary("example", "work")).toEqual(original);
+      await expect(services.connections.getCredential("example", "work")).resolves.toMatchObject({
+        accessToken: "prior-access-token",
+        metadata: { oauthAuthorizationId: "prior-authorization" },
+      });
+    },
+  );
+
   it("uses separate Slack user and bot authorization paths with the same OAuth app", async () => {
     const services = createServices([
       { ...slackProvider, actions: [] },
@@ -467,6 +620,98 @@ describe("OAuthFlowService", () => {
       "https://slack.com/api/oauth.v2.user.access",
       "https://slack.com/api/oauth.v2.access",
     ]);
+  });
+
+  it("isolates Slack custom user clients and accepts the pinned top-level user token response", async () => {
+    const services = createServices(
+      [
+        { ...slackProvider, actions: [] },
+        { ...slackbotProvider, actions: [] },
+      ],
+      {
+        allowedCustomOAuth: ["slack"],
+        secretCodec: new AesGcmSecretCodec("slack-test-key"),
+      },
+    );
+    await services.clientConfigs.upsertConfig({
+      service: "slack",
+      clientId: "shared-client",
+      clientSecret: "shared-secret",
+    });
+    const requestedScopes = [
+      "channels:read",
+      "channels:history",
+      "groups:read",
+      "groups:history",
+      "im:read",
+      "im:history",
+      "mpim:read",
+      "mpim:history",
+      "users:read",
+    ];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+        expect(String(url)).toBe("https://slack.com/api/oauth.v2.user.access");
+        const body = new URLSearchParams(String(init?.body));
+        const tenant = body.get("code");
+        expect(["tenant-a", "tenant-b"]).toContain(tenant);
+        expect(body.get("client_id")).toBe(`${tenant}-client`);
+        expect(body.get("client_secret")).toBe(`${tenant}-secret`);
+        expect(body.get("redirect_uri")).toBe("http://localhost:3000/oauth/callback");
+        return Response.json({
+          ok: true,
+          access_token: `xoxp-${tenant}`,
+          refresh_token: `${tenant}-refresh`,
+          token_type: "Bearer",
+          expires_in: 43_200,
+          scope: requestedScopes.join(","),
+        });
+      }),
+    );
+    const attempts = [];
+    for (const tenant of ["tenant-a", "tenant-b"]) {
+      const started = await services.flow.startAuthorization({
+        service: "slack",
+        connectionName: tenant,
+        clientConfig: { clientId: `${tenant}-client`, clientSecret: `${tenant}-secret`, requestedScopes },
+      });
+      const url = new URL(started.authorizationUrl);
+      expect(`${url.origin}${url.pathname}`).toBe("https://slack.com/oauth/v2_user/authorize");
+      expect(url.searchParams.get("client_id")).toBe(`${tenant}-client`);
+      expect(url.searchParams.get("scope")?.split(",").sort()).toEqual([...requestedScopes].sort());
+      expect(url.searchParams.has("client_secret")).toBe(false);
+      expect(url.searchParams.has("user_scope")).toBe(false);
+      attempts.push({ tenant, started });
+    }
+    for (const { tenant, started } of attempts.reverse()) {
+      await services.flow.completeAuthorization({ state: started.state, code: tenant });
+      await expect(services.connections.getCredential("slack", tenant)).resolves.toMatchObject({
+        authType: "oauth2",
+        accessToken: `xoxp-${tenant}`,
+        refreshToken: `${tenant}-refresh`,
+        tokenType: "Bearer",
+        metadata: {
+          oauthClientConfig: {
+            clientId: `${tenant}-client`,
+            clientSecret: `${tenant}-secret`,
+            requestedScopes,
+          },
+        },
+      });
+    }
+    await expect(services.connections.getCredential("slack")).resolves.toBeUndefined();
+    await expect(services.connections.getCredential("slackbot")).resolves.toBeUndefined();
+    await expect(services.clientConfigs.getConfig("slack")).resolves.toMatchObject({
+      clientId: "shared-client",
+      clientSecret: "shared-secret",
+    });
+    await expect(
+      services.flow.startAuthorization({
+        service: "slackbot",
+        clientConfig: { clientId: "bot-client", clientSecret: "bot-secret" },
+      }),
+    ).rejects.toMatchObject({ code: "oauth_custom_app_not_allowed" });
   });
 
   it("rejects expired OAuth authorization states", async () => {
@@ -787,6 +1032,7 @@ interface CreateServicesOptions {
   stateMaxAgeMs?: number;
   allowedCustomOAuth?: string[];
   secretCodec?: ISecretCodec;
+  credentialValidators?: CredentialValidators;
 }
 
 function createServices(
@@ -801,7 +1047,7 @@ function createServices(
   const catalog = createCatalogStore(providers);
   const connections = new ConnectionService({
     catalog,
-    providerLoader: new EmptyProviderLoader(),
+    providerLoader: new EmptyProviderLoader(options.credentialValidators),
     store: new MemoryConnectionStore(),
   });
   const clientConfigs = new OAuthClientConfigService({
@@ -828,6 +1074,12 @@ function createServices(
 }
 
 class EmptyProviderLoader implements IProviderLoader {
+  private readonly validators?: CredentialValidators;
+
+  constructor(validators?: CredentialValidators) {
+    this.validators = validators;
+  }
+
   async loadActionExecutor(_service: string, _actionId: string): Promise<ActionExecutor | undefined> {
     return undefined;
   }
@@ -837,7 +1089,7 @@ class EmptyProviderLoader implements IProviderLoader {
   }
 
   async loadCredentialValidators(_service: string): Promise<CredentialValidators | undefined> {
-    return undefined;
+    return this.validators;
   }
 }
 

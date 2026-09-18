@@ -167,6 +167,84 @@ const pageParent = s.oneOf(
   { description: "The official Notion parent object." },
 );
 
+/**
+ * `retrieve_page_markdown`'s output, DECLARED rather than a loose object.
+ *
+ * Every other notion action forwards Notion's body verbatim under a
+ * `notionObject`, which is right for objects whose shape belongs to Notion. A
+ * rendered page is different: it is one row a consumer will map columns onto,
+ * and a declared schema is what lets a consumer's fingerprint of this action
+ * catch an upstream rename at registration instead of at scan time.
+ *
+ * **Declaring it may not silently narrow it.** `s.object` sets
+ * `additionalProperties: false`, and this action shipped with the provider —
+ * SDK and CLI callers already read the fields Notion's own body carries. So
+ * Notion's fields keep NOTION'S names and are forwarded unchanged, and the
+ * two fields this action adds are additive. An earlier revision of this
+ * schema renamed `unknown_block_ids` to `unknownBlockIds` and dropped
+ * `object`/`id`, which would have broken every existing caller on upgrade for
+ * no gain: a consumer mapping columns can read a snake_case key as easily as
+ * a camelCase one.
+ */
+const notionPageMarkdownSchema = s.object(
+  {
+    // ---- Notion's own, forwarded verbatim ------------------------------
+    // Not required: they are Notion's to send, and declaring them mandatory
+    // would turn an upstream omission into a validation failure on a render
+    // that is otherwise perfectly usable.
+    object: s.string({ description: "Notion's object tag for the rendered result." }),
+    id: s.string({ description: "The id Notion echoes for the rendered page, in Notion's own spelling." }),
+    markdown: s.string({
+      description: "The page rendered as enhanced Markdown. An empty string for a page with no content.",
+    }),
+    truncated: s.boolean({
+      description:
+        "Whether the render stopped short of the whole page (Notion renders roughly 20,000 blocks at most). Resubmit the ids in unknown_block_ids to fetch what was left out.",
+    }),
+    unknown_block_ids: s.array(s.string({ description: "A block id." }), {
+      description:
+        "Blocks rendered as <unknown>: truncated subtrees, children this grant cannot read, and unsupported block types. Non-empty on many complete pages, so not on its own a sign of a partial render.",
+    }),
+
+    // ---- Constructed here, and additive --------------------------------
+    // camelCase, matching this provider's convention for fields it builds
+    // rather than forwards (see `notionCurrentUserSchema`).
+    pageId: s.string({
+      description:
+        "The page or block id the render was requested for, exactly as given in the input. Notion may spell an id dashed or undashed in its own body, so a consumer joining rows to bindings needs the spelling it asked with.",
+    }),
+    lastEditedTime: s.dateTime(
+      "When the page or block was last edited, read from its own object — the markdown response carries no revision.",
+    ),
+  },
+  {
+    required: ["markdown", "truncated", "unknown_block_ids", "pageId", "lastEditedTime"],
+    description: "A Notion page rendered as Markdown, with its revision and how complete the render was.",
+  },
+);
+
+/**
+ * `get_current_user`'s output. Read off the OAuth grant, never off
+ * `GET /users/me`: under an OAuth token that endpoint describes the BOT and
+ * names the workspace only by `workspace_name`, never by `workspace_id`, and
+ * `workspace_id` is the value everything downstream keys on.
+ */
+const notionCurrentUserSchema = s.object(
+  {
+    workspaceId: s.string({ description: "The Notion workspace the grant was issued in." }),
+    workspaceName: s.nullable(s.string({ description: "The workspace's display name, when the grant carried one." })),
+    userId: s.nullable(
+      s.string({ description: "The person who authorized the grant. Null when the grant names no user." }),
+    ),
+    userName: s.nullable(s.string({ description: "That person's display name, when the grant carried one." })),
+    isBot: s.boolean({ description: "Whether the credential resolves to a bot rather than a person." }),
+  },
+  {
+    required: ["workspaceId", "workspaceName", "userId", "userName", "isBot"],
+    description: "The workspace and owning user of the connected Notion credential.",
+  },
+);
+
 const action = (input: {
   name: string;
   description: string;
@@ -183,6 +261,14 @@ const action = (input: {
   });
 
 export const notionActions: ActionDefinition[] = [
+  action({
+    name: "get_current_user",
+    description:
+      "The workspace and owning user of the connected Notion credential, read from the OAuth grant it was created with. Makes no API call, and refuses a credential whose grant names no workspace — an internal-integration secret cannot.",
+    requiredScopes: [],
+    inputSchema: s.object({}),
+    outputSchema: notionCurrentUserSchema,
+  }),
   action({
     name: "search",
     description: "Search Notion pages and data sources with optional filter, sort, and pagination controls.",
@@ -306,7 +392,7 @@ export const notionActions: ActionDefinition[] = [
       },
       { required: ["pageId"], description: "The input payload for this action." },
     ),
-    outputSchema: notionObject,
+    outputSchema: notionPageMarkdownSchema,
   }),
   action({
     name: "update_page_markdown",

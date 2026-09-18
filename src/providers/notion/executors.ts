@@ -3,6 +3,7 @@ import type {
   ExecutionContext,
   ProviderExecutors,
   ProviderProxyExecutor,
+  ResolvedCredential,
 } from "../../core/types.ts";
 import type { ProviderActionHandlers } from "../provider-runtime.ts";
 
@@ -37,11 +38,22 @@ interface NotionRequestInput {
 interface NotionActionContext {
   accessToken: string;
   fetcher: typeof fetch;
+  /**
+   * The stored credential's runtime metadata. For an OAuth credential this is
+   * the token-exchange response minus its secrets — `workspace_id`, `owner`,
+   * `bot_id`, `workspace_name` — which is where Notion states who authorized
+   * a grant and in which workspace. No endpoint answers that afterwards, so
+   * `get_current_user` reads it here.
+   */
+  metadata: Record<string, unknown>;
 }
 
 type NotionActionHandler = (input: Record<string, unknown>, context: NotionActionContext) => Promise<unknown>;
 
 export const notionActionHandlers: ProviderActionHandlers<"notion", NotionActionHandler> = {
+  get_current_user(_input, context): Promise<unknown> {
+    return Promise.resolve(notionGetCurrentUser(context.metadata));
+  },
   search(input, context): Promise<unknown> {
     return notionSearch(input, context.accessToken, context.fetcher);
   },
@@ -124,8 +136,14 @@ export const executors: ProviderExecutors = defineProviderExecutors<NotionAction
   handlers: notionActionHandlers,
   skipDnsValidation: true,
   async createContext(context: ExecutionContext, fetcher: typeof fetch): Promise<NotionActionContext> {
-    const credential = await requireBearerCredential(context, service);
-    return { accessToken: credential.accessToken, fetcher };
+    // Resolved ONCE: a resolution may refresh the token, and the bearer
+    // helper would resolve it a second time.
+    const stored = await context.getCredential(service);
+    return {
+      accessToken: bearerTokenOf(stored),
+      fetcher,
+      metadata: stored && stored.authType !== "no_auth" ? stored.metadata : {},
+    };
   },
 });
 
@@ -166,10 +184,87 @@ export const credentialValidators: CredentialValidators = {
   async apiKey(input, { fetcher }) {
     return validateNotionCredential(input.apiKey, fetcher);
   },
+  /**
+   * The profile is the OWNING USER, not the bot.
+   *
+   * `GET /users/me` under an OAuth token describes the integration's bot, and
+   * a bot id is a UUID like any member's — so a consumer that linked the
+   * connecting person to this profile's `accountId` would bind them to a
+   * principal that authorizes nobody, with nothing anywhere looking wrong.
+   * The grant was requested with `owner=user`, so the exchange response
+   * already names the human; it is on `input.metadata`. The liveness call
+   * still runs, because that is what proves the token works.
+   */
   async oauth2(input, { fetcher }) {
-    return validateNotionCredential(input.accessToken, fetcher);
+    const live = await validateNotionCredential(input.accessToken, fetcher);
+    const owner = grantOwner(input.metadata);
+    if (!owner) {
+      return live;
+    }
+    return {
+      profile: {
+        accountId: owner.id,
+        displayName: owner.name ?? live.profile.displayName,
+      },
+      metadata: live.metadata,
+    };
   },
 };
+
+/** The token's bearer value, whichever stored kind carries it. */
+function bearerTokenOf(credential: ResolvedCredential | undefined): string {
+  if (credential?.authType === "oauth2") {
+    return credential.accessToken;
+  }
+  if (credential?.authType === "api_key") {
+    return credential.apiKey;
+  }
+  throw new ProviderRequestError(401, `Configure ${service} credentials first.`);
+}
+
+/**
+ * The person named on the OAuth grant, or `undefined` for a grant that names
+ * none (an internal-integration secret; a grant whose `owner.type` is
+ * `workspace`).
+ */
+function grantOwner(metadata: Record<string, unknown>): { id: string; name: string | undefined } | undefined {
+  const owner = asObject(metadata.owner);
+  if (owner?.type !== "user") {
+    return undefined;
+  }
+  const user = asObject(owner.user);
+  const id = asNonEmptyString(user?.id);
+  return id ? { id, name: asNonEmptyString(user?.name) } : undefined;
+}
+
+/**
+ * `get_current_user`: the workspace and owner of the grant, and nothing else.
+ *
+ * Refuses rather than guesses when the grant names no workspace. That is the
+ * internal-integration case, and it is a real limit rather than a missing
+ * field: Notion exposes a workspace id ONLY in the OAuth token exchange, so
+ * a pasted secret can never answer this and a consumer that keys on the
+ * workspace id cannot be built on one.
+ */
+function notionGetCurrentUser(metadata: Record<string, unknown>) {
+  const workspaceId = asNonEmptyString(metadata.workspace_id);
+  if (!workspaceId) {
+    throw new ProviderRequestError(
+      400,
+      "the stored Notion credential names no workspace_id — only an OAuth grant carries one; reconnect Notion with an OAuth app",
+      undefined,
+      "invalid_credential_metadata",
+    );
+  }
+  const owner = grantOwner(metadata);
+  return {
+    workspaceId,
+    workspaceName: asNonEmptyString(metadata.workspace_name) ?? null,
+    userId: owner?.id ?? null,
+    userName: owner?.name ?? null,
+    isBot: owner === undefined,
+  };
+}
 
 async function validateNotionCredential(
   accessToken: string,
@@ -241,20 +336,85 @@ async function notionRetrievePage(input: Record<string, unknown>, accessToken: s
   return page ?? {};
 }
 
+/**
+ * The revision of whatever `pageId` names, and the reachability check that
+ * comes with reading it.
+ *
+ * **Pages and blocks both**, because this action's input has always been
+ * documented as "the page or block ID" and its description as "a Notion page
+ * **or block subtree**". A preflight that only knew `GET /pages/{id}` turned
+ * the advertised block-subtree flow into a 404 before the render was ever
+ * attempted — Notion answers `object_not_found` for a block id there.
+ *
+ * Pages first, since that is the overwhelmingly common input and costs one
+ * request; a 404 falls through to `/blocks/{id}`, which carries its own
+ * `last_edited_time`. Any other status propagates unchanged: a 401, 403 or
+ * 429 is an answer about the credential, not about which kind of id this is,
+ * and retrying it against a second endpoint would only double the cost and
+ * blur the error.
+ */
+async function notionLastEditedTime(id: string, accessToken: string, fetcher: typeof fetch) {
+  for (const path of [`/pages/${id}`, `/blocks/${id}`]) {
+    let object: NotionObject;
+    try {
+      object = (await notionRequest<NotionObject>(accessToken, { path }, fetcher)) ?? {};
+    } catch (error) {
+      if (error instanceof ProviderRequestError && error.status === 404 && !path.startsWith("/blocks/")) {
+        continue;
+      }
+      throw error;
+    }
+
+    const lastEditedTime = asNonEmptyString(object.last_edited_time);
+    if (lastEditedTime) {
+      return lastEditedTime;
+    }
+  }
+
+  throw new ProviderRequestError(502, `Notion returned ${id} without a last_edited_time`);
+}
+
+/**
+ * One page or block subtree as Markdown.
+ *
+ * Two requests, the object first: it is the cheap question ("can this grant
+ * reach this, and when did it last change") and answers a 404 before the
+ * expensive render is attempted. The markdown response has no revision of its
+ * own, so `lastEditedTime` comes from that object.
+ *
+ * **Notion's fields keep Notion's names.** This action shipped with the
+ * provider, so its body is a contract SDK and CLI callers already read; the
+ * response is forwarded and the two constructed fields are added beside it.
+ * `pageId` is echoed from the INPUT — Notion may spell an id dashed or
+ * undashed in its own body, and a consumer joining rows to bindings needs the
+ * spelling it asked with.
+ */
 async function notionRetrievePageMarkdown(input: Record<string, unknown>, accessToken: string, fetcher: typeof fetch) {
   const pageId = String(input.pageId);
-  const payload = await notionRequest<NotionObject>(
-    accessToken,
-    {
-      path: `/pages/${pageId}/markdown`,
-      query: compactQuery({
-        include_transcript: typeof input.includeTranscript === "boolean" ? String(input.includeTranscript) : undefined,
-      }),
-    },
-    fetcher,
-  );
+  const lastEditedTime = await notionLastEditedTime(pageId, accessToken, fetcher);
+  const rendered =
+    (await notionRequest<NotionObject>(
+      accessToken,
+      {
+        path: `/pages/${pageId}/markdown`,
+        query: compactQuery({
+          include_transcript:
+            typeof input.includeTranscript === "boolean" ? String(input.includeTranscript) : undefined,
+        }),
+      },
+      fetcher,
+    )) ?? {};
 
-  return payload ?? {};
+  return {
+    ...rendered,
+    markdown: typeof rendered.markdown === "string" ? rendered.markdown : "",
+    truncated: rendered.truncated === true,
+    unknown_block_ids: Array.isArray(rendered.unknown_block_ids)
+      ? rendered.unknown_block_ids.filter((id): id is string => typeof id === "string")
+      : [],
+    pageId,
+    lastEditedTime,
+  };
 }
 
 async function notionRetrievePageProperty(input: Record<string, unknown>, accessToken: string, fetcher: typeof fetch) {

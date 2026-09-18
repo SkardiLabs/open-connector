@@ -56,6 +56,21 @@ describe("OAuthCredentialRefreshService", () => {
     expect(refreshed.expiresAt).toBe(new Date(now + 3600_000).toISOString());
   });
 
+  it.each([
+    { stored: "completed-authorization", response: undefined },
+    { stored: "completed-authorization", response: "provider-supplied-id" },
+    { stored: undefined, response: "provider-supplied-id" },
+  ])("preserves authorization provenance across refresh %#", async ({ stored, response }) => {
+    stubRefreshResponse({ oauthAuthorizationId: response });
+    const refreshed = await new OAuthCredentialRefreshService(clientConfigs).refresh(
+      "example",
+      expiredCredential({ oauthAuthorizationId: stored }),
+    );
+
+    expect(refreshed.accessToken).toBe("new-access-token");
+    expect(refreshed.metadata.oauthAuthorizationId).toBe(stored);
+  });
+
   it("uses a connection-scoped OAuth client config before the global config", async () => {
     const fetcher = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => {
       return Response.json({ access_token: "new-access-token" });
