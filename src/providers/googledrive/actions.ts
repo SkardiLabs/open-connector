@@ -390,6 +390,23 @@ const actionSources: GoogledriveActionSource[] = [
                     type: "boolean",
                     description: "Whether the file has been trashed.",
                   },
+                  ownedByMe: {
+                    type: "boolean",
+                    description: "Whether the authenticated user owns the file.",
+                  },
+                  capabilities: {
+                    type: "object",
+                    properties: {
+                      canShare: {
+                        type: "boolean",
+                        description: "Whether the authenticated user may modify the file's sharing settings.",
+                      },
+                    },
+                    required: ["canShare"],
+                    additionalProperties: false,
+                    description:
+                      "The subset of Drive capabilities this provider projects. Absent when Drive did not answer it.",
+                  },
                 },
                 required: [
                   "id",
@@ -1671,6 +1688,23 @@ const actionSources: GoogledriveActionSource[] = [
             type: "boolean",
             description: "Whether the file has been trashed.",
           },
+          ownedByMe: {
+            type: "boolean",
+            description: "Whether the authenticated user owns the file.",
+          },
+          capabilities: {
+            type: "object",
+            properties: {
+              canShare: {
+                type: "boolean",
+                description: "Whether the authenticated user may modify the file's sharing settings.",
+              },
+            },
+            required: ["canShare"],
+            additionalProperties: false,
+            description:
+              "The subset of Drive capabilities this provider projects. Absent when Drive did not answer it.",
+          },
         },
         required: ["id", "name", "mimeType", "webViewLink", "createdTime", "modifiedTime", "sizeBytes", "driveId"],
         additionalProperties: false,
@@ -1909,6 +1943,23 @@ const actionSources: GoogledriveActionSource[] = [
               trashed: {
                 type: "boolean",
                 description: "Whether the file has been trashed.",
+              },
+              ownedByMe: {
+                type: "boolean",
+                description: "Whether the authenticated user owns the file.",
+              },
+              capabilities: {
+                type: "object",
+                properties: {
+                  canShare: {
+                    type: "boolean",
+                    description: "Whether the authenticated user may modify the file's sharing settings.",
+                  },
+                },
+                required: ["canShare"],
+                additionalProperties: false,
+                description:
+                  "The subset of Drive capabilities this provider projects. Absent when Drive did not answer it.",
               },
             },
             required: ["id", "name", "mimeType", "webViewLink", "createdTime", "modifiedTime", "sizeBytes", "driveId"],
@@ -5278,6 +5329,22 @@ const actionSources: GoogledriveActionSource[] = [
           type: "boolean",
           description: "Whether the file has been trashed.",
         },
+        ownedByMe: {
+          type: "boolean",
+          description: "Whether the authenticated user owns the file.",
+        },
+        capabilities: {
+          type: "object",
+          properties: {
+            canShare: {
+              type: "boolean",
+              description: "Whether the authenticated user may modify the file's sharing settings.",
+            },
+          },
+          required: ["canShare"],
+          additionalProperties: false,
+          description: "The subset of Drive capabilities this provider projects. Absent when Drive did not answer it.",
+        },
       },
       required: ["id", "name", "mimeType", "webViewLink", "createdTime", "modifiedTime", "sizeBytes", "driveId"],
       additionalProperties: false,
@@ -5501,6 +5568,22 @@ const actionSources: GoogledriveActionSource[] = [
         trashed: {
           type: "boolean",
           description: "Whether the file has been trashed.",
+        },
+        ownedByMe: {
+          type: "boolean",
+          description: "Whether the authenticated user owns the file.",
+        },
+        capabilities: {
+          type: "object",
+          properties: {
+            canShare: {
+              type: "boolean",
+              description: "Whether the authenticated user may modify the file's sharing settings.",
+            },
+          },
+          required: ["canShare"],
+          additionalProperties: false,
+          description: "The subset of Drive capabilities this provider projects. Absent when Drive did not answer it.",
         },
       },
       required: ["id", "name", "mimeType", "webViewLink", "createdTime", "modifiedTime", "sizeBytes", "driveId"],
@@ -6126,6 +6209,22 @@ const actionSources: GoogledriveActionSource[] = [
         trashed: {
           type: "boolean",
           description: "Whether the file has been trashed.",
+        },
+        ownedByMe: {
+          type: "boolean",
+          description: "Whether the authenticated user owns the file.",
+        },
+        capabilities: {
+          type: "object",
+          properties: {
+            canShare: {
+              type: "boolean",
+              description: "Whether the authenticated user may modify the file's sharing settings.",
+            },
+          },
+          required: ["canShare"],
+          additionalProperties: false,
+          description: "The subset of Drive capabilities this provider projects. Absent when Drive did not answer it.",
         },
       },
       required: ["id", "name", "mimeType", "webViewLink", "createdTime", "modifiedTime", "sizeBytes", "driveId"],
