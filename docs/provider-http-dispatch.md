@@ -47,7 +47,11 @@ Manual redirects admit the first HTTP attempt only. Followed redirects are
 admitted individually, using the actual hop's origin and rewritten method.
 
 The frozen context contains only runtime-owned operation, catalog service/action,
-execution ID and resolved connection ID/revision when available. Action inputs,
+execution ID and resolved connection ID, stored connection name and opaque
+credential revision when available. The stored name is not copied from incoming
+headers or action input. Revision is a string, not a host commit sequence; a
+host must independently map and revalidate its own connection authority.
+Action inputs,
 incoming request headers, credential/profile metadata, URL paths/queries/fragments,
 request headers/bodies and response bodies are absent. `bindAuthority` receives
 only that context; its frozen output copies only `workspaceId`,
@@ -86,6 +90,30 @@ also cannot change the transport outcome. Keep callbacks bounded and persist
 dispatch commitment before allowing a request.
 `not_dispatched` does not roll back a host's already-spent dispatch commitment;
 Open Connector never refunds credits or chooses the host's replay policy.
+
+Hosts that can affirmatively settle a completed HTTP attempt may additionally
+return `onBodyEnd(event)`, where `event.kind` is `eof` or `unknown`. This is
+separate from `onResult(response)`, which observes **headers**, never body EOF.
+The optional body observer reads lazily, one upstream chunk per downstream
+pull, preserving status, headers, response metadata and native clone behavior.
+No observer means the exact original Response and body behavior are retained.
+
+Only consuming a real response body through EOF, or an explicit real no-body
+response (HEAD with a final HTTP status, 204/205/304), supplies EOF evidence.
+An unread body supplies none. Cancellation, abort, stream failure, already-used
+or locked bodies, status-zero error/opaque responses and unclassified null
+bodies remain unknown. SDK synthetic metadata responses, including Alibaba OSS
+HEAD/204, never supply real-body EOF. Re-guarding retains that restriction.
+Cancelling a followed redirect's response does not prove its attempt finished;
+a strict host must provide a qualified completion/reconciliation policy or
+conservatively deny the next hop.
+
+Body feedback starts once but does not delay native close, errors or
+cancellation. A slow/failed bookkeeping callback cannot turn completed provider
+bytes into a timeout/replay candidate; `onFeedbackError` remains advisory.
+Hosts must retain the slot until their exact durable completion receipt and
+exclusive-owner settlement are confirmed. The callback is not socket fencing,
+generic recovery or permission to refund an uncertain request.
 
 Library callers can use `withProviderHttpDispatch(context, run, options)` from
 `src/core/provider-http-dispatch.ts` around standalone provider fetches. Nested
