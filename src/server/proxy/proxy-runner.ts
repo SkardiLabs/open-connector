@@ -9,7 +9,11 @@ import type { SaasExecutionService } from "../../saas/saas-execution-service.ts"
 import { ConnectionError } from "../../connection-service.ts";
 import { optionalInteger, optionalRecord, requiredRecord, requiredString } from "../../core/cast.ts";
 import { withProviderHttpDispatch } from "../../core/provider-http-dispatch.ts";
-import { ProviderDispatchRequestError, toProviderExecutionError } from "../../providers/provider-runtime.ts";
+import {
+  ProviderDispatchRequestError,
+  toProviderExecutionError,
+  withProviderHttpDispatchResult,
+} from "../../providers/provider-runtime.ts";
 import { SaasError } from "../../saas/saas-client.ts";
 import { mapConnectionErrorStatus } from "../api/runtime-api.ts";
 
@@ -187,7 +191,7 @@ export class ProxyRunner {
           message: `Proxy execution is not supported for ${provider.service}.`,
           meta: { service: provider.service },
         };
-      const result = await withProviderHttpDispatch(
+      const result = await withProviderHttpDispatchResult(
         {
           operation: "proxy",
           service: provider.service,

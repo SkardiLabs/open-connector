@@ -17,8 +17,11 @@ import type { OAuthTokenResult } from "./oauth-token.ts";
 
 import { createHash, randomBytes } from "node:crypto";
 import { ConnectionError } from "../connection-service.ts";
-import { withProviderHttpDispatch } from "../core/provider-http-dispatch.ts";
-import { providerFetch, ProviderDispatchRequestError } from "../providers/provider-runtime.ts";
+import {
+  providerFetch,
+  ProviderDispatchRequestError,
+  withProviderHttpDispatchResult,
+} from "../providers/provider-runtime.ts";
 import { requestAuthorizationCodeToken } from "./oauth-token.ts";
 
 /**
@@ -252,7 +255,7 @@ export class OAuthFlowService {
 
     const providerOAuth = await this.providerLoader.loadProviderOAuthRuntime?.(service);
     const resolvedAuthorizationUrl = providerOAuth?.buildAuthorizationUrl
-      ? await withProviderHttpDispatch({ operation: "oauth", service }, () =>
+      ? await withProviderHttpDispatchResult({ operation: "oauth", service }, () =>
           providerOAuth.buildAuthorizationUrl!({ authorizationUrl, clientConfig: config, now }),
         )
       : authorizationUrl.toString();
@@ -291,7 +294,7 @@ export class OAuthFlowService {
         new OAuthFlowError("oauth_token_exchange_failed", message);
       const providerOAuth = await this.providerLoader.loadProviderOAuthRuntime?.(pending.service);
       let tokenResponse: OAuthTokenResult;
-      tokenResponse = await withProviderHttpDispatch(
+      tokenResponse = await withProviderHttpDispatchResult(
         {
           operation: "oauth",
           service: pending.service,

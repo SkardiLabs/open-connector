@@ -2,9 +2,14 @@ import type { ProviderHttpAttempt, ProviderHttpPermit } from "./provider-http-di
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { lacunaActionHandlers, skipRetryDelay } from "../providers/lacuna/runtime.ts";
-import { createProviderFetch, providerFetch, toProviderExecutionError } from "../providers/provider-runtime.ts";
+import {
+  createProviderFetch,
+  providerFetch,
+  toProviderExecutionError,
+  withProviderHttpDispatchResult,
+} from "../providers/provider-runtime.ts";
 import { createGuardedFetch } from "./guarded-fetch.ts";
-import { withProviderHttpDispatch } from "./provider-http-dispatch.ts";
+import { dispatchProviderHttpAttempt, withProviderHttpDispatch } from "./provider-http-dispatch.ts";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -24,6 +29,123 @@ const context = {
 } as const;
 
 describe("provider HTTP dispatch", () => {
+  it("retains sanitized denial when provider code returns a remapped result", async () => {
+    const transport = vi.fn<typeof fetch>();
+    const pending = withProviderHttpDispatchResult(
+      context,
+      async () => {
+        try {
+          await createProviderFetch({ fetch: transport })("https://example.com");
+          return { ok: true };
+        } catch {
+          return { ok: false, error: { code: "credential_verification_failed", status: 400 } };
+        }
+      },
+      { beforeAttempt: () => ({ allow: false, retryAfterSeconds: 28 }) },
+    );
+    await expect(pending).rejects.toMatchObject({
+      status: 429,
+      code: "rate_limited",
+      details: { retryAfterSeconds: 28 },
+    });
+    expect(transport).not.toHaveBeenCalled();
+  });
+
+  it("does not taint an explicit successful retry in an independent nested invocation", async () => {
+    const response = new Response("ok");
+    const transport = vi.fn<typeof fetch>().mockResolvedValue(response);
+    const fetcher = createProviderFetch({ fetch: transport });
+    let denied = false;
+    const result = await withProviderHttpDispatchResult(
+      context,
+      async () => {
+        await withProviderHttpDispatchResult(context, () => fetcher("https://example.com")).catch(() => undefined);
+        return withProviderHttpDispatchResult(context, () => fetcher("https://example.com"));
+      },
+      {
+        beforeAttempt: () => {
+          if (denied) return { allow: true };
+          denied = true;
+          return { allow: false, retryAfterSeconds: 28 };
+        },
+      },
+    );
+    expect(result).toBe(response);
+    expect(transport).toHaveBeenCalledOnce();
+  });
+
+  it("does not permit later side effects after a caught terminal denial in the same invocation", async () => {
+    const transport = vi.fn<typeof fetch>().mockResolvedValue(new Response("side effect completed"));
+    const fetcher = createProviderFetch({ fetch: transport });
+    const beforeAttempt = vi
+      .fn()
+      .mockReturnValueOnce({ allow: false, retryAfterSeconds: 28 })
+      .mockReturnValue({ allow: true });
+    const pending = withProviderHttpDispatchResult(
+      context,
+      async () => {
+        await fetcher("https://example.com/first").catch(() => undefined);
+        return fetcher("https://example.com/fallback", { method: "POST" }).catch(() => ({ ok: true }));
+      },
+      { beforeAttempt },
+    );
+    await expect(pending).rejects.toMatchObject({ status: 429, details: { retryAfterSeconds: 28 } });
+    expect(beforeAttempt).toHaveBeenCalledOnce();
+    expect(transport).not.toHaveBeenCalled();
+  });
+
+  it.each(["admission", "dispatch", "revalidation"])(
+    "fences a concurrent sibling denied while another attempt waits for %s",
+    async (phase) => {
+      const waiting = deferred<void>();
+      const gate = deferred<void>();
+      const transport = vi.fn(async () => new Response("side effect completed"));
+      const onResult = vi.fn();
+      const onDispatch = vi.fn(async () => {
+        if (phase === "dispatch") {
+          waiting.resolve();
+          await gate.promise;
+        }
+      });
+      const target = { requestId: "waiting", redirectHop: 0, method: "POST", origin: "https://example.com" };
+      const pending = withProviderHttpDispatchResult(
+        context,
+        async () => {
+          const first = dispatchProviderHttpAttempt(target, undefined, transport, async () => {
+            if (phase === "revalidation") {
+              waiting.resolve();
+              await gate.promise;
+            }
+          }).catch(() => undefined);
+          await waiting.promise;
+          await dispatchProviderHttpAttempt(
+            { ...target, requestId: "denied" },
+            undefined,
+            transport,
+            async () => {},
+          ).catch(() => undefined);
+          gate.resolve();
+          await first;
+          return { ok: true };
+        },
+        {
+          beforeAttempt: async (attempt) => {
+            if (attempt.requestId === "denied") return { allow: false, retryAfterSeconds: 28 };
+            if (phase === "admission") {
+              waiting.resolve();
+              await gate.promise;
+            }
+            return { allow: true, onDispatch, onResult };
+          },
+        },
+      );
+      await expect(pending).rejects.toMatchObject({ status: 429, details: { retryAfterSeconds: 28 } });
+      expect(transport).not.toHaveBeenCalled();
+      expect(onDispatch).toHaveBeenCalledTimes(phase === "admission" ? 0 : 1);
+      expect(onResult).toHaveBeenCalledExactlyOnceWith({ kind: "not_dispatched", reason: "dispatch_failed" });
+    },
+  );
+
   it("preserves unset behavior and passes the original transport response through", async () => {
     const response = new Response("ok");
     const transport = vi.fn<typeof fetch>().mockResolvedValue(response);

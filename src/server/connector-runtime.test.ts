@@ -21,6 +21,39 @@ afterEach(async () => {
 });
 
 describe("headless runtime", () => {
+  it("preserves admission denial after a real provider remaps it into validation and transport errors", async () => {
+    let deny = false;
+    const fetcher = vi.fn<typeof fetch>(async () => Response.json({ credit_balance: 100 }));
+    vi.stubGlobal("fetch", fetcher);
+    runtime = await createConnectorRuntime({
+      ...(await fixture(["ninjapear"])),
+      providerHttpDispatch: {
+        beforeAttempt: () => (deny ? { allow: false, retryAfterSeconds: 62 } : { allow: true }),
+      },
+    });
+    expect((await request("/v1/connections/ninjapear/connect/api-key", { apiKey: "fixture-secret" })).status).toBe(200);
+    const accounts = (await (await request("/v1/apps", undefined, "runtime-token")).json()).data;
+    deny = true;
+    const executed = await runtime.fetch(
+      new Request(`${publicOrigin}/v1/actions/ninjapear.get_credit_balance`, {
+        method: "POST",
+        headers: {
+          authorization: "Bearer runtime-token",
+          "content-type": "application/json",
+          "x-oo-connector-alias": accounts[0].alias,
+        },
+        body: JSON.stringify({ input: {} }),
+      }),
+    );
+    const validated = await request("/v1/connections/ninjapear/connect/api-key", { apiKey: "another-secret" });
+    for (const response of [executed, validated]) {
+      expect(response.status).toBe(429);
+      expect(response.headers.get("Retry-After")).toBe("62");
+      expect(await response.json()).toMatchObject({ errorCode: "rate_limited" });
+    }
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+
   it("binds resolved connection authority and exposes dispatch denial as 429 on action, proxy and validation routes", async () => {
     const attempts: ProviderHttpAttempt[] = [];
     let deny = false;
@@ -334,12 +367,12 @@ it("starts persisted cleanup without HTTP traffic and waits for its abort on clo
   }
 });
 
-async function fixture(): Promise<ConnectorRuntimeOptions> {
+async function fixture(services = ["github"]): Promise<ConnectorRuntimeOptions> {
   const root = await mkdtemp(join(tmpdir(), "open-connector-runtime-"));
   directories.push(root);
   const catalogDir = join(root, "catalog");
   await mkdir(catalogDir);
-  for (const service of ["github"])
+  for (const service of services)
     await cp(resolve(import.meta.dirname, `../../catalog/apps/${service}.json`), join(catalogDir, `${service}.json`));
   return {
     dataDir: join(root, "state"),

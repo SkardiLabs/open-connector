@@ -1,3 +1,4 @@
+import type { ProviderDispatchContext, ProviderHttpDispatchOptions } from "../core/provider-http-dispatch.ts";
 import type {
   ActionExecutor,
   ExecutionContext,
@@ -23,7 +24,11 @@ import {
   requiredString,
 } from "../core/cast.ts";
 import { createGuardedFetch } from "../core/guarded-fetch.ts";
-import { dispatchProviderHttpAttempt, ProviderHttpDispatchError } from "../core/provider-http-dispatch.ts";
+import {
+  dispatchProviderHttpAttempt,
+  ProviderHttpDispatchError,
+  runWithProviderHttpDispatch,
+} from "../core/provider-http-dispatch.ts";
 import { readBoundedResponseBytes } from "../core/request.ts";
 
 /**
@@ -86,6 +91,20 @@ export function createProviderFetch(options: ProviderFetchOptions = {}): Provide
  * the native fetch is always invoked without a stray receiver.
  */
 export const providerFetch: ProviderFetch = createProviderFetch();
+
+/** Preserve admission denials at the shared runtime boundary despite provider-specific error mapping. */
+export async function withProviderHttpDispatchResult<T>(
+  context: ProviderDispatchContext,
+  run: () => T | Promise<T>,
+  options?: ProviderHttpDispatchOptions,
+): Promise<T> {
+  try {
+    return await runWithProviderHttpDispatch(context, run, options);
+  } catch (error) {
+    if (error instanceof ProviderHttpDispatchError) throw new ProviderDispatchRequestError(error.retryAfterSeconds);
+    throw error;
+  }
+}
 
 /**
  * Default User-Agent sent by local provider executors.

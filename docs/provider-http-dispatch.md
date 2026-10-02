@@ -32,6 +32,13 @@ A denial becomes `rate_limited` / HTTP 429, with `Retry-After` when the hook
 provides a nonnegative safe integer `retryAfterSeconds`. Authority-binding,
 admission and dispatch-commit failures fail closed with the same safe retryable
 denial. Callback error strings are never exposed to clients.
+The runtime retains an invocation-local, sanitized denial marker, so a provider's
+own catch/error mapping cannot turn admission denial into invalid credentials or
+an upstream failure. Denial is terminal for that invocation: caught-denial retries
+and fallbacks cannot dispatch later side effects and then return a retryable 429.
+Independent nested invocations have independent markers and can retry explicitly.
+Earlier attempts in a multi-request operation may already have reached the provider;
+a later denial cannot undo those side effects or make replay inherently idempotent.
 
 Each attempt has a unique `attemptId`. Each fetch invocation has a `requestId`,
 shared by its redirect hops, with `redirectHop` starting at zero. A provider's
@@ -49,6 +56,18 @@ exchange have no established connection identity. The request's outer fallback
 scope has operation `runtime`; a host needing stricter identity must deny unknown
 contexts, not derive authority from request data.
 
+With admission configured, execution credentials are frozen snapshots paired with
+the revision that supplied their bytes. Unset credential mutability is retained.
+OAuth refresh uses the connection store's optional
+`updateCredentialSnapshot(input, refresh)` compare-and-swap method, which must
+atomically return the written credential and new revision, or `undefined` on a
+failed comparison. SQL stores implement this using `RETURNING`; a later read is
+not a valid substitute because concurrent reauthorization could relabel old
+credentials with a newer revision. Boolean-only custom stores still refresh
+without a hook, but a configured hook fails closed before refresh if this atomic
+snapshot method is unavailable. Trigger execution also rejects a changed revision
+between resolving its credential snapshot and binding its target.
+
 Admission runs after the initial URL/DNS guard. The guard runs again after
 admission and dispatch commitment, immediately before egress, because queued
 work may wait long enough for DNS answers to change. Private-network opt-in,
@@ -65,10 +84,15 @@ based on missing result feedback. `onResult` failure preserves the original
 response/error and optionally invokes `onFeedbackError(attempt)`; that observer
 also cannot change the transport outcome. Keep callbacks bounded and persist
 dispatch commitment before allowing a request.
+`not_dispatched` does not roll back a host's already-spent dispatch commitment;
+Open Connector never refunds credits or chooses the host's replay policy.
 
 Library callers can use `withProviderHttpDispatch(context, run, options)` from
 `src/core/provider-http-dispatch.ts` around standalone provider fetches. Nested
 scopes inherit the hook and replace identity; concurrent scopes remain isolated.
+Use `runWithProviderHttpDispatch` at an asynchronous invocation boundary if the
+called library may catch and remap transport errors: it rethrows the original
+sanitized admission denial even when the library returns a converted error result.
 Hosts should use their own control-plane transport for arbiter RPCs rather than
 recursively calling provider fetchers from a hook. The async scope uses
 `AsyncLocalStorage.run/getStore`, available on Node, Bun and Workers with the

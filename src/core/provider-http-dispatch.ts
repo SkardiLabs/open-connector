@@ -65,6 +65,7 @@ export interface ProviderHttpDispatchOptions {
 interface DispatchScope {
   options: ProviderHttpDispatchOptions;
   context: ProviderDispatchContext;
+  receipt: { denial?: ProviderHttpDispatchError };
 }
 
 export interface GuardedHttpAttempt {
@@ -102,7 +103,8 @@ export function withProviderHttpDispatch<T>(
   run: () => T,
   options?: ProviderHttpDispatchOptions,
 ): T {
-  const configured = options ?? scopes.getStore()?.options;
+  const parent = scopes.getStore();
+  const configured = options ?? parent?.options;
   if (!configured) return run();
   // Copy an explicit allowlist so accidental credential-bearing extra fields cannot escape.
   const snapshot: ProviderDispatchContext = Object.freeze({
@@ -113,7 +115,44 @@ export function withProviderHttpDispatch<T>(
     connectionId: context.connectionId,
     connectionRevision: context.connectionRevision,
   });
-  return scopes.run({ options: configured, context: snapshot }, run);
+  return scopes.run(
+    { options: configured, context: snapshot, receipt: parent?.options === configured ? parent.receipt : {} },
+    run,
+  );
+}
+
+/**
+ * A provider invocation boundary: retain the original denial even if provider code catches,
+ * replaces, or converts it to a result. Each invocation owns its marker, so a sibling's
+ * denial cannot override another invocation's successful retry or fallback.
+ */
+export async function runWithProviderHttpDispatch<T>(
+  context: ProviderDispatchContext,
+  run: () => T | Promise<T>,
+  options?: ProviderHttpDispatchOptions,
+): Promise<T> {
+  return withProviderHttpDispatch(
+    context,
+    async () => {
+      const inherited = scopes.getStore();
+      if (!inherited) return run();
+      const scope: DispatchScope = { ...inherited, receipt: {} };
+      return scopes.run(scope, async () => {
+        try {
+          const result = await run();
+          if (scope.receipt.denial) throw scope.receipt.denial;
+          return result;
+        } catch (error) {
+          throw scope.receipt.denial ?? error;
+        }
+      });
+    },
+    options,
+  );
+}
+
+function deny(scope: DispatchScope, retryAfterSeconds?: number): ProviderHttpDispatchError {
+  return (scope.receipt.denial ??= Object.freeze(new ProviderHttpDispatchError(retryAfterSeconds)));
 }
 
 /** Whether an SDK transport needs to use the opt-in provider HTTP dispatch bridge. */
@@ -126,11 +165,15 @@ export const dispatchProviderHttpAttempt: GuardedHttpDispatcher = async (target,
   const scope = scopes.getStore();
   if (!scope) return transport();
   signal?.throwIfAborted();
+  // Denial is terminal for this invocation. A provider may catch it, but must not complete
+  // later side effects that the boundary would then misreport as a retryable denial.
+  if (scope.receipt.denial) throw scope.receipt.denial;
   let permit: ProviderHttpPermit | ProviderHttpDenial;
   let attempt: ProviderHttpAttempt;
   try {
     const authority = await waitForSignal(Promise.resolve(scope.options.bindAuthority?.(scope.context)), signal);
     signal?.throwIfAborted();
+    if (scope.receipt.denial) throw scope.receipt.denial;
     attempt = Object.freeze({
       attemptId: crypto.randomUUID(),
       requestId: target.requestId,
@@ -155,25 +198,28 @@ export const dispatchProviderHttpAttempt: GuardedHttpDispatcher = async (target,
     if (!permit || typeof permit.allow !== "boolean") throw new ProviderHttpDispatchError();
   } catch {
     signal?.throwIfAborted();
-    throw new ProviderHttpDispatchError();
+    throw deny(scope);
   }
   if (!permit.allow) {
     const seconds = permit.retryAfterSeconds;
-    throw new ProviderHttpDispatchError(Number.isSafeInteger(seconds) && seconds! >= 0 ? seconds : undefined);
+    throw deny(scope, Number.isSafeInteger(seconds) && seconds! >= 0 ? seconds : undefined);
   }
   const admitted = permit;
   const feedback = (result: ProviderHttpAttemptResult): Promise<void> =>
     reportFeedback(scope.options, attempt, admitted, result);
   try {
     signal?.throwIfAborted();
+    if (scope.receipt.denial) throw scope.receipt.denial;
     await waitForSignal(Promise.resolve(admitted.onDispatch?.()), signal);
+    if (scope.receipt.denial) throw scope.receipt.denial;
     // Admission can wait arbitrarily long. Re-screen DNS/URL before issuing the admitted hop.
     await waitForSignal(revalidate(), signal);
     signal?.throwIfAborted();
+    if (scope.receipt.denial) throw scope.receipt.denial;
   } catch {
     await feedback({ kind: "not_dispatched", reason: signal?.aborted ? "cancelled" : "dispatch_failed" });
     signal?.throwIfAborted();
-    throw new ProviderHttpDispatchError();
+    throw deny(scope);
   }
   let response: Response;
   try {

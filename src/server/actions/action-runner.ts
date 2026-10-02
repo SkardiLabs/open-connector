@@ -11,7 +11,11 @@ import type { IRunLogStore, RunLog, RunLogCaller, RunLogListInput, RunLogPage } 
 import { ConnectionError } from "../../connection-service.ts";
 import { executeAction as executeProviderAction } from "../../core/execution.ts";
 import { withProviderHttpDispatch } from "../../core/provider-http-dispatch.ts";
-import { ProviderDispatchRequestError, toProviderExecutionError } from "../../providers/provider-runtime.ts";
+import {
+  ProviderDispatchRequestError,
+  toProviderExecutionError,
+  withProviderHttpDispatchResult,
+} from "../../providers/provider-runtime.ts";
 import { SaasError } from "../../saas/saas-client.ts";
 import { safeRunLogError, summarizeForRunLog } from "./run-log-summary.ts";
 
@@ -148,7 +152,7 @@ export class ActionRunner {
           input.signal?.throwIfAborted();
           const saasReference = connection.kind === "saas" ? connection.reference : undefined;
           const resolvedConnection = connection;
-          result = await withProviderHttpDispatch(
+          result = await withProviderHttpDispatchResult(
             {
               operation: "action",
               service: action.service,

@@ -1,7 +1,9 @@
-import type { IConnectionStore, StoredConnection } from "./connection-service.ts";
+import type { IConnectionStore, StoredConnection, StoredLocalConnection } from "./connection-service.ts";
+import type { ProviderHttpDispatchOptions } from "./core/provider-http-dispatch.ts";
 import type { ActionExecutor, CredentialValidators, ProviderDefinition, ResolvedCredential } from "./core/types.ts";
 import type { MarketplaceService } from "./marketplace/marketplace-service.ts";
 import type { OAuthClientConfig } from "./oauth/oauth-client-config-service.ts";
+import type { IOAuthCredentialRefresher } from "./oauth/oauth-credential-refresh-service.ts";
 import type { IProviderLoader } from "./providers/provider-loader.ts";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -824,6 +826,87 @@ describe("ConnectionService", () => {
     expect(fetcher).toHaveBeenCalledOnce();
   });
 
+  it("pairs shared refreshed bytes with their atomic revision despite subsequent same-account reauthorization", async () => {
+    const store = new MemoryConnectionStore();
+    const expired = {
+      authType: "oauth2" as const,
+      accessToken: "expired-token",
+      tokenType: "Bearer",
+      refreshToken: "refresh-token",
+      expiresAt: "2026-01-01T00:00:00.000Z",
+      profile: testProfile,
+      metadata: {},
+    };
+    const original = await store.set("example", "default", expired);
+    const fresh = { ...expired, accessToken: "refreshed-token", expiresAt: "2099-01-01T00:00:00.000Z" };
+    let complete!: (credential: typeof fresh) => void;
+    const refresh = vi.fn(() => new Promise<typeof fresh>((resolve) => (complete = resolve)));
+    const service = createService([oauthProvider], {
+      store,
+      oauthCredentials: { refresh },
+      providerHttpDispatch: { beforeAttempt: () => ({ allow: true }) },
+    });
+    const update = store.updateCredentialSnapshot.bind(store);
+    let written: StoredLocalConnection | undefined;
+    const write = vi.spyOn(store, "updateCredentialSnapshot").mockImplementation(async (input) => {
+      written = await update(input);
+      await store.set("example", "default", { ...fresh, accessToken: "reauthorized-token" });
+      return written;
+    });
+    const first = service.resolveForExecution("example");
+    const second = service.resolveForExecution("example");
+    await vi.waitFor(() => expect(refresh).toHaveBeenCalledOnce());
+    complete(fresh);
+    const targets = await Promise.all([first, second]);
+    const current = await store.get("example", "default");
+    expect(write).toHaveBeenCalledOnce();
+    expect(written?.revision).not.toBe(original.revision);
+    expect(current?.revision).not.toBe(written?.revision);
+    for (const target of targets) {
+      if (target.kind !== "local") throw new Error("Expected local connection");
+      expect(target.connectionRevision).toBe(written?.revision);
+      const credential = await target.getCredential("example");
+      expect(credential).toMatchObject({ accessToken: "refreshed-token" });
+      expect(Object.isFrozen(credential)).toBe(true);
+      expect(credential?.authType !== "no_auth" && Object.isFrozen(credential?.profile)).toBe(true);
+    }
+    expect(current).toMatchObject({ credential: { accessToken: "reauthorized-token" } });
+  });
+
+  it("keeps boolean-only adapter refresh working unset but fails closed before refresh when admission is configured", async () => {
+    const memory = new MemoryConnectionStore();
+    const store: IConnectionStore = {
+      get: memory.get.bind(memory),
+      set: memory.set.bind(memory),
+      updateCredential: memory.updateCredential.bind(memory),
+      delete: memory.delete.bind(memory),
+      list: memory.list.bind(memory),
+    };
+    const expired = {
+      authType: "oauth2" as const,
+      accessToken: "expired-token",
+      tokenType: "Bearer",
+      refreshToken: "refresh-token",
+      expiresAt: "2026-01-01T00:00:00.000Z",
+      profile: testProfile,
+      metadata: {},
+    };
+    const refresh = vi.fn(async () => ({ ...expired, accessToken: "fresh-token" }));
+    await store.set("example", "default", expired);
+    await expect(
+      createService([oauthProvider], { store, oauthCredentials: { refresh } }).getCredential("example"),
+    ).resolves.toMatchObject({ accessToken: "fresh-token" });
+    expect(refresh).toHaveBeenCalledOnce();
+    await store.set("example", "default", expired);
+    const guarded = createService([oauthProvider], {
+      store,
+      oauthCredentials: { refresh },
+      providerHttpDispatch: { beforeAttempt: () => ({ allow: true }) },
+    });
+    await expect(guarded.resolveForExecution("example")).rejects.toMatchObject({ status: 429, code: "rate_limited" });
+    expect(refresh).toHaveBeenCalledOnce();
+  });
+
   it("does not overwrite a connection recreated during OAuth refresh", async () => {
     const store = new MemoryConnectionStore();
     const oauthClientConfigs = createOAuthClientConfigs([oauthProvider]);
@@ -1070,6 +1153,51 @@ describe("ConnectionService", () => {
     });
   });
 
+  it("retains unset mutable credentials but detaches and freezes configured execution authority", async () => {
+    const store = new MemoryConnectionStore();
+    const credential = {
+      authType: "api_key" as const,
+      apiKey: "original-key",
+      values: { apiKey: "original-key" },
+      profile: { ...testProfile },
+      metadata: {},
+    };
+    await store.set("uptimerobot", "default", credential);
+    const legacy = await createService([apiKeyProvider], { store }).resolveForExecution("uptimerobot");
+    if (legacy.kind !== "local") throw new Error("Expected local connection");
+    expect(await legacy.getCredential("uptimerobot")).toBe(credential);
+    expect(Object.isFrozen(legacy)).toBe(false);
+    expect(Object.isFrozen(credential)).toBe(false);
+    const guarded = await createService([apiKeyProvider], {
+      store,
+      providerHttpDispatch: { beforeAttempt: () => ({ allow: true }) },
+    }).resolveForExecution("uptimerobot");
+    if (guarded.kind !== "local") throw new Error("Expected local connection");
+    const frozen = await guarded.getCredential("uptimerobot");
+    expect(Object.isFrozen(guarded)).toBe(true);
+    expect(Object.isFrozen(frozen)).toBe(true);
+    credential.apiKey = "mutated-key";
+    expect(frozen).toMatchObject({ apiKey: "original-key" });
+    await expect(legacy.getCredential("uptimerobot")).resolves.toMatchObject({ apiKey: "mutated-key" });
+
+    const oauth = {
+      authType: "oauth2" as const,
+      accessToken: "valid-token",
+      tokenType: "Bearer",
+      profile: testProfile,
+      metadata: { formatter: () => "custom-store metadata" },
+    };
+    await store.set("example", "default", oauth);
+    await expect(createService([oauthProvider], { store }).getCredential("example")).resolves.toBe(oauth);
+    expect(Object.isFrozen(oauth)).toBe(false);
+    await expect(
+      createService([oauthProvider], {
+        store,
+        providerHttpDispatch: { beforeAttempt: () => ({ allow: true }) },
+      }).getCredential("example"),
+    ).rejects.toMatchObject({ status: 429, code: "rate_limited" });
+  });
+
   it("resolves each service credential once per forConnection scope", async () => {
     const store = new MemoryConnectionStore();
     const service = createService([apiKeyProvider, customCredentialProvider], { store });
@@ -1121,16 +1249,18 @@ describe("ConnectionService", () => {
 });
 
 interface CreateServiceOptions {
+  providerHttpDispatch?: ProviderHttpDispatchOptions;
   logger?: ReturnType<typeof createTestLogger>;
-  oauthCredentials?: OAuthCredentialRefreshService;
+  oauthCredentials?: IOAuthCredentialRefresher;
   providerLoader?: IProviderLoader;
-  store?: MemoryConnectionStore;
+  store?: IConnectionStore;
 }
 
 function createService(providers: ProviderDefinition[], options: CreateServiceOptions = {}): ConnectionService {
   const catalog = createCatalogStore(providers);
 
   return new ConnectionService({
+    providerHttpDispatch: options.providerHttpDispatch,
     catalog,
     logger: options.logger,
     oauthCredentials: options.oauthCredentials,
@@ -1196,11 +1326,17 @@ class MemoryConnectionStore implements IConnectionStore {
   }
 
   async updateCredential(input: StoredConnection): Promise<boolean> {
+    if (input.source === "saas") return false;
+    return (await this.updateCredentialSnapshot(input)) !== undefined;
+  }
+
+  async updateCredentialSnapshot(input: StoredLocalConnection): Promise<StoredLocalConnection | undefined> {
     const key = createConnectionKey(input.service, input.connectionName);
     const current = this.store.get(key);
-    if (current?.id !== input.id || current.revision !== input.revision) return false;
-    this.store.set(key, { ...input, revision: crypto.randomUUID() });
-    return true;
+    if (current?.id !== input.id || current.revision !== input.revision) return undefined;
+    const updated = { ...input, revision: crypto.randomUUID() };
+    this.store.set(key, updated);
+    return updated;
   }
 
   async delete(service: string, connectionName: string): Promise<void> {
