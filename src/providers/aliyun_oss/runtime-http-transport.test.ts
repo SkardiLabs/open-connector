@@ -40,6 +40,33 @@ afterEach(() => {
 });
 
 describe("Alibaba Cloud OSS HTTP dispatch bridge", () => {
+  it("never treats SDK metadata as EOF, even when its synthetic response describes HEAD or 204", async () => {
+    for (const [method, status] of [
+      ["HEAD", 200],
+      ["GET", 204],
+    ] as const) {
+      const response = { ...result(), status };
+      const client: AliyunOssHttpClient = {
+        urllib: { request: vi.fn().mockResolvedValue(response) },
+        requestError: async (error) => error,
+      };
+      guardAliyunOssHttpClient(client);
+      const onBodyEnd = vi.fn();
+      const onResult = vi.fn();
+      expect(
+        await withProviderHttpDispatch(
+          context,
+          () => client.urllib.request("https://oss-cn-hangzhou.aliyuncs.com/path", { method }),
+          {
+            beforeAttempt: () => ({ allow: true, onResult, onBodyEnd }),
+          },
+        ),
+      ).toBe(response);
+      expect(onResult).toHaveBeenCalledExactlyOnceWith({ kind: "response", status, retryAfter: undefined });
+      expect(onBodyEnd).toHaveBeenCalledExactlyOnceWith({ kind: "unknown" });
+    }
+  });
+
   it("preserves the SDK's exact buffered and streaming request/response objects", async () => {
     const stream = Readable.from([Buffer.from("streamed content")]);
     const response = { ...result(), res: stream };

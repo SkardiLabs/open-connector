@@ -34,6 +34,7 @@ export function guardAliyunOssHttpClient(client: AliyunOssHttpClient, signal?: A
     async request(url, options): Promise<AliyunOssHttpResponse> {
       let result: AliyunOssHttpResponse | undefined;
       const fetcher = createProviderFetch({
+        responseObservation: "metadata_only",
         allowPrivateNetwork: isPrivateNetworkAccessAllowed,
         fetch: async () => {
           result = await base.request(url, { ...options, followRedirect: false });

@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { observeProviderResponseBody } from "./provider-response-body.ts";
 
 /** Runtime-owned identity. Never populate these fields from action input or HTTP headers. */
 export interface ProviderDispatchContext {
@@ -36,12 +37,26 @@ export type ProviderHttpAttemptResult =
   | { readonly kind: "transport_error" }
   | { readonly kind: "not_dispatched"; readonly reason: "cancelled" | "dispatch_failed" };
 
+/** Separate body/operation evidence. Headers and local cancellation are not EOF. */
+export interface ProviderHttpBodyEnd {
+  readonly kind: "eof" | "unknown";
+}
+
+/** Set by the transport adapter, never by a provider request header or action input. */
+export type ProviderResponseObservation = "body" | "metadata_only";
+
 export interface ProviderHttpPermit {
   readonly allow: true;
   /** Awaited immediately before transport. Persist dispatch commitment here; failures deny egress. */
   readonly onDispatch?: () => void | Promise<void>;
   /** Exactly once after a permit is returned, including cancellation before dispatch. */
   readonly onResult?: (result: ProviderHttpAttemptResult) => void | Promise<void>;
+  /**
+   * Optional once-only EOF/unknown observer. An unread body does not complete.
+   * Feedback runs independently of native body close/error/cancel; the host
+   * retains conservative attempt state until its durable bookkeeping settles.
+   */
+  readonly onBodyEnd?: (event: ProviderHttpBodyEnd) => void | Promise<void>;
 }
 
 export interface ProviderHttpDenial {
@@ -75,6 +90,7 @@ export interface GuardedHttpAttempt {
   readonly redirectHop: number;
   readonly method: string;
   readonly origin: string;
+  readonly responseObservation?: ProviderResponseObservation;
 }
 
 export type GuardedHttpDispatcher = (
@@ -237,7 +253,24 @@ export const dispatchProviderHttpAttempt: GuardedHttpDispatcher = async (target,
     status: response.status,
     retryAfter: response.headers.get("retry-after") ?? undefined,
   });
-  return response;
+  // Keep the exact Response and legacy body behavior when no observer is set.
+  if (!admitted.onBodyEnd) return response;
+  return observeProviderResponseBody(response, {
+    method: target.method,
+    observation: target.responseObservation ?? "body",
+    signal,
+    onBodyEnd: async (event) => {
+      try {
+        await admitted.onBodyEnd?.(event);
+      } catch {
+        try {
+          await scope.options.onFeedbackError?.(attempt);
+        } catch {
+          // Completion feedback cannot cause an already-issued request replay.
+        }
+      }
+    },
+  });
 };
 
 async function reportFeedback(

@@ -1,3 +1,4 @@
+import type { GuardedFetchOptions } from "../core/guarded-fetch.ts";
 import type { ProviderDispatchContext, ProviderHttpDispatchOptions } from "../core/provider-http-dispatch.ts";
 import type {
   ActionExecutor,
@@ -39,6 +40,8 @@ export type ProviderFetch = typeof fetch;
 export interface ProviderFetchOptions {
   /** Base transport; defaults to the global fetch. A guarded fetch is unwrapped so guards never stack. */
   fetch?: ProviderFetch;
+  /** SDK bridges represent metadata only, not a completed fetch response body. */
+  responseObservation?: GuardedFetchOptions["responseObservation"];
   /** Allow private-network targets for this provider's egress (see `assertPublicHttpUrl`); default public-only. */
   allowPrivateNetwork?: () => boolean;
   /**
@@ -68,6 +71,7 @@ export function createProviderFetch(options: ProviderFetchOptions = {}): Provide
       }
     },
     fetch: options.fetch,
+    responseObservation: options.responseObservation,
     allowPrivateNetwork: options.allowPrivateNetwork,
     skipDnsValidation: options.skipDnsValidation,
     additionalSensitiveHeaders: options.additionalSensitiveHeaders,

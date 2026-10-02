@@ -30,6 +30,108 @@ const context = {
 } as const;
 
 describe("provider HTTP dispatch", () => {
+  it("keeps headers distinct from EOF and retains exact response identity without an observer", async () => {
+    const original = Response.json({ fixture: true });
+    const transport = vi.fn<typeof fetch>().mockResolvedValue(original);
+    const onResult = vi.fn();
+    const untouched = await withProviderHttpDispatch(
+      context,
+      () => createProviderFetch({ fetch: transport })("https://example.com"),
+      {
+        beforeAttempt: () => ({ allow: true, onResult }),
+      },
+    );
+    expect(untouched).toBe(original);
+    expect(original.bodyUsed).toBe(false);
+    expect(onResult).toHaveBeenCalledExactlyOnceWith({ kind: "response", status: 200, retryAfter: undefined });
+
+    const onBodyEnd = vi.fn();
+    const onFeedbackError = vi.fn();
+    const observed = await withProviderHttpDispatch(
+      context,
+      () => createProviderFetch({ fetch: transport })("https://example.com"),
+      {
+        beforeAttempt: () => ({ allow: true, onBodyEnd }),
+        onFeedbackError,
+      },
+    );
+    expect(onBodyEnd).not.toHaveBeenCalled();
+    expect(await observed.json()).toEqual({ fixture: true });
+    expect(onBodyEnd).toHaveBeenCalledExactlyOnceWith({ kind: "eof" });
+    expect(onFeedbackError).not.toHaveBeenCalled();
+    expect(transport).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports body observer failure safely without changing the provider result or replaying transport", async () => {
+    const transport = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ fixture: true }));
+    const onFeedbackError = vi.fn();
+    const response = await withProviderHttpDispatch(
+      context,
+      () => createProviderFetch({ fetch: transport })("https://example.com"),
+      {
+        beforeAttempt: () => ({
+          allow: true,
+          onBodyEnd: () => {
+            throw new Error("host-secret failure");
+          },
+        }),
+        onFeedbackError,
+      },
+    );
+    expect(await response.json()).toEqual({ fixture: true });
+    expect(onFeedbackError).toHaveBeenCalledOnce();
+    expect(transport).toHaveBeenCalledOnce();
+  });
+
+  it("treats redirect-body cancellation as unknown and observes the next hop independently", async () => {
+    const transport = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response("redirect body", { status: 302, headers: { location: "https://other.example" } }),
+      )
+      .mockResolvedValueOnce(new Response("final body"));
+    const events: { hop: number; kind: string }[] = [];
+    const headers: number[] = [];
+    const response = await withProviderHttpDispatch(
+      context,
+      () => createProviderFetch({ fetch: transport })("https://example.com"),
+      {
+        beforeAttempt: (attempt) => ({
+          allow: true,
+          onResult: () => {
+            headers.push(attempt.redirectHop);
+          },
+          onBodyEnd: (event) => {
+            events.push({ hop: attempt.redirectHop, kind: event.kind });
+          },
+        }),
+      },
+    );
+    expect(headers).toEqual([0, 1]);
+    expect(events).toEqual([{ hop: 0, kind: "unknown" }]);
+    expect(await response.text()).toBe("final body");
+    expect(events).toEqual([
+      { hop: 0, kind: "unknown" },
+      { hop: 1, kind: "eof" },
+    ]);
+    expect(transport).toHaveBeenCalledTimes(2);
+  });
+
+  it("preserves metadata-only observation through re-guarded cached fetchers", async () => {
+    const onBodyEnd = vi.fn();
+    const metadata = createProviderFetch({
+      responseObservation: "metadata_only",
+      fetch: async () => new Response(null),
+    });
+    const wrapped = createProviderFetch({ fetch: metadata });
+    const custom = createGuardedFetch({ fetch: wrapped, responseObservation: "body" });
+    const response = await withProviderHttpDispatch(context, () => custom("https://example.com", { method: "HEAD" }), {
+      beforeAttempt: () => ({ allow: true, onBodyEnd }),
+    });
+    expect(response.body).toBe(null);
+    expect(onBodyEnd).toHaveBeenCalledExactlyOnceWith({ kind: "unknown" });
+  });
+
   it("retains sanitized denial when provider code returns a remapped result", async () => {
     const transport = vi.fn<typeof fetch>();
     const pending = withProviderHttpDispatchResult(
