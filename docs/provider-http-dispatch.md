@@ -76,8 +76,11 @@ repository's `nodejs_compat` configuration.
 
 Coverage is provider HTTP through the shared guarded fetch, including provider
 content downloads, credential validation, OAuth requests and Trigger proxies.
-The existing Alibaba Cloud OSS SDK action transport requires a separate bridge
-before it can share this admission seam. Non-HTTP egress is outside this hook:
+Alibaba Cloud OSS SDK actions bridge the SDK's existing urllib transport into
+the same guarded seam when configured. Signing, request bodies/streams, response
+objects and SDK retries are retained; native redirects are surfaced as errors.
+SDK transport cancellation after dispatch follows its existing timeout behavior.
+Non-HTTP egress is outside this hook:
 Home Assistant WebSockets, MQTT over WebSockets, and IMAP/SMTP TCP/TLS connections
 keep their own SSRF guards but do not acquire an HTTP permit. Platform transit
 storage, remote SaaS/Marketplace execution and host control-plane requests also

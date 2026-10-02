@@ -7,10 +7,12 @@ import type {
   TransitFileWriter,
 } from "../../core/types.ts";
 import type { ProviderActionHandlers } from "../provider-runtime.ts";
+import type { AliyunOssHttpClient } from "./runtime-http-transport.ts";
 
 import AliOss from "ali-oss";
 import { compactObject, optionalInteger, optionalRecord, optionalString, requiredRawString } from "../../core/cast.ts";
 import { assertGuardedEgressUrl } from "../../core/guarded-fetch.ts";
+import { isProviderHttpDispatchConfigured } from "../../core/provider-http-dispatch.ts";
 import { assertPublicHttpUrl, isPrivateNetworkAccessAllowed, readBoundedResponseBytes } from "../../core/request.ts";
 import {
   createProviderFetch,
@@ -24,6 +26,7 @@ import {
   readProviderProxyResponse,
   toProviderProxyError,
 } from "../provider-runtime.ts";
+import { guardAliyunOssHttpClient } from "./runtime-http-transport.ts";
 
 const service = "aliyun_oss";
 const sourceFetchTimeoutMs = 15_000;
@@ -113,6 +116,7 @@ interface AliyunClientOptions {
   securityToken?: string;
   endpoint: string;
   bucket?: string;
+  signal?: AbortSignal;
 }
 
 interface AliyunOssContext {
@@ -287,12 +291,15 @@ export const proxy: ProviderProxyExecutor = async (input, context) => {
 };
 
 export const credentialValidators: CredentialValidators = {
-  async customCredential(input): Promise<CredentialValidationResult> {
-    return validateAliyunOssCredential(input.values);
+  async customCredential(input, options): Promise<CredentialValidationResult> {
+    return validateAliyunOssCredential(input.values, options.signal);
   },
 };
 
-async function validateAliyunOssCredential(input: Record<string, string>): Promise<CredentialValidationResult> {
+async function validateAliyunOssCredential(
+  input: Record<string, string>,
+  signal?: AbortSignal,
+): Promise<CredentialValidationResult> {
   const accessKeyId = requireAliyunField(input.accessKeyId, "accessKeyId");
   const accessKeySecret = requireAliyunField(input.accessKeySecret, "accessKeySecret");
   const endpoint = normalizeEndpoint(requireAliyunField(input.endpoint, "endpoint"));
@@ -305,6 +312,7 @@ async function validateAliyunOssCredential(input: Record<string, string>): Promi
       accessKeySecret,
       securityToken,
       endpoint,
+      signal,
     });
     const result = await client.listBuckets({ "max-keys": 1 });
     const firstBucket = normalizeBucket(result.buckets?.[0]);
@@ -336,14 +344,18 @@ async function createAliyunOssClient(input: AliyunClientOptions): Promise<Aliyun
     createError: (message) => new ProviderRequestError(400, message),
     allowPrivateNetwork: isPrivateNetworkAccessAllowed(),
   });
-  return new AliOss({
+  const client = new AliOss({
     accessKeyId: input.accessKeyId,
     accessKeySecret: input.accessKeySecret,
     stsToken: input.securityToken,
     endpoint: stripProtocol(endpoint),
     bucket: input.bucket,
     secure: true,
-  }) as unknown as AliyunOssClient;
+  });
+  // Keep the SDK's existing transport unchanged unless a host enabled admission.
+  if (isProviderHttpDispatchConfigured())
+    guardAliyunOssHttpClient(client as unknown as AliyunOssHttpClient, input.signal);
+  return client as unknown as AliyunOssClient;
 }
 
 function buildAliyunOssProxyBaseUrl(endpoint: string, bucket: string | undefined): string {
@@ -676,6 +688,7 @@ async function createClientForAction(
     securityToken: optionalString(context.values.securityToken),
     endpoint,
     bucket,
+    signal: context.signal,
   });
 }
 
