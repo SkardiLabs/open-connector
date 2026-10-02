@@ -149,7 +149,12 @@ async function extractGoogleError(
  * every other provider's rate limit does; anything else is left undefined so the
  * caller falls back to the default `authorization_failed` for a 403.
  */
-const driveQuotaReasons = new Set(["ratelimitexceeded", "userratelimitexceeded", "dailylimitexceeded", "quotaexceeded"]);
+const driveQuotaReasons = new Set([
+  "ratelimitexceeded",
+  "userratelimitexceeded",
+  "dailylimitexceeded",
+  "quotaexceeded",
+]);
 
 function isDriveQuotaReason(reason: string | undefined): boolean {
   return driveQuotaReasons.has((reason ?? "").toLowerCase().replace(/[^a-z]/g, ""));
