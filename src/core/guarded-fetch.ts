@@ -1,3 +1,5 @@
+import type { GuardedHttpDispatcher } from "./provider-http-dispatch.ts";
+
 import { assertPublicHttpUrl, classifyIpAddress, isEgressTrustedHost, isIpAddress, isIpv4Address } from "./request.ts";
 
 /**
@@ -16,6 +18,8 @@ export interface ResolvedAddress {
 export type GuardedFetchDnsLookup = (hostname: string) => Promise<ResolvedAddress[]>;
 
 export interface GuardedFetchOptions {
+  /** Optional dispatcher at the screened raw-transport seam; every redirect hop passes through it. */
+  dispatchAttempt?: GuardedHttpDispatcher;
   /**
    * Base transport issuing the actual requests. Defaults to the global fetch,
    * resolved per call so test stubs installed later still apply.
@@ -203,15 +207,35 @@ export function createGuardedFetch(options: GuardedFetchOptions = {}): typeof fe
   const maxRedirects = options.maxRedirects ?? defaultMaxRedirects;
   const guardedFetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const transport = baseFetch ?? globalThis.fetch;
+    const requestId = options.dispatchAttempt ? crypto.randomUUID() : "";
+    let redirectHop = 0;
     const fetchTransport = async (
       transportInput: RequestInfo | URL,
       transportInit?: RequestInit,
     ): Promise<Response> => {
-      try {
-        return await transport(transportInput, transportInit);
-      } catch (error) {
-        throw options.mapTransportError?.(error) ?? error;
-      }
+      const send = async (): Promise<Response> => {
+        try {
+          return await transport(transportInput, transportInit);
+        } catch (error) {
+          throw options.mapTransportError?.(error) ?? error;
+        }
+      };
+      const transportRequest = transportInput instanceof Request ? transportInput : undefined;
+      return options.dispatchAttempt
+        ? options.dispatchAttempt(
+            Object.freeze({
+              requestId,
+              redirectHop,
+              origin: url.origin,
+              method: (transportInit?.method ?? transportRequest?.method ?? "GET").toUpperCase(),
+            }),
+            transportInit?.signal ?? transportRequest?.signal ?? undefined,
+            send,
+            async () => {
+              await guardHop(url.toString(), "request URL");
+            },
+          )
+        : send();
     };
     const allowPrivateNetwork =
       typeof options.allowPrivateNetwork === "function"
@@ -245,6 +269,7 @@ export function createGuardedFetch(options: GuardedFetchOptions = {}): typeof fe
     let body: BodyInit | null | undefined = init?.body !== undefined ? init.body : request?.body;
 
     for (let redirects = 0; ; redirects++) {
+      redirectHop = redirects;
       const response =
         redirects === 0
           ? request

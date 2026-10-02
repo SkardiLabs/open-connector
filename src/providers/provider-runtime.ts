@@ -23,6 +23,7 @@ import {
   requiredString,
 } from "../core/cast.ts";
 import { createGuardedFetch } from "../core/guarded-fetch.ts";
+import { dispatchProviderHttpAttempt, ProviderHttpDispatchError } from "../core/provider-http-dispatch.ts";
 import { readBoundedResponseBytes } from "../core/request.ts";
 
 /**
@@ -53,6 +54,14 @@ export interface ProviderFetchOptions {
  */
 export function createProviderFetch(options: ProviderFetchOptions = {}): ProviderFetch {
   return createGuardedFetch({
+    dispatchAttempt: async (attempt, signal, transport, revalidate) => {
+      try {
+        return await dispatchProviderHttpAttempt(attempt, signal, transport, revalidate);
+      } catch (error) {
+        if (error instanceof ProviderHttpDispatchError) throw new ProviderDispatchRequestError(error.retryAfterSeconds);
+        throw error;
+      }
+    },
     fetch: options.fetch,
     allowPrivateNetwork: options.allowPrivateNetwork,
     skipDnsValidation: options.skipDnsValidation,
@@ -271,6 +280,13 @@ export class ProviderRequestError extends Error {
     this.status = status;
     this.details = details;
     this.code = code;
+  }
+}
+
+/** A dispatch denial is retryable and must not be wrapped as a bad provider credential. */
+export class ProviderDispatchRequestError extends ProviderRequestError {
+  constructor(retryAfterSeconds?: number) {
+    super(429, "Provider HTTP dispatch is temporarily unavailable.", { retryAfterSeconds }, "rate_limited");
   }
 }
 

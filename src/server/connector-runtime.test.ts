@@ -1,3 +1,4 @@
+import type { ProviderHttpAttempt } from "../core/provider-http-dispatch.ts";
 import type { ConnectorRuntime, ConnectorRuntimeOptions } from "./connector-runtime.ts";
 
 import { cp, mkdtemp, mkdir, readFile, rm } from "node:fs/promises";
@@ -20,6 +21,59 @@ afterEach(async () => {
 });
 
 describe("headless runtime", () => {
+  it("binds resolved connection authority and exposes dispatch denial as 429 on action, proxy and validation routes", async () => {
+    const attempts: ProviderHttpAttempt[] = [];
+    let deny = false;
+    const fetcher = vi.fn<typeof fetch>(async () => Response.json({ id: 1, login: "fixture-account" }));
+    vi.stubGlobal("fetch", fetcher);
+    runtime = await createConnectorRuntime({
+      ...(await fixture()),
+      providerHttpDispatch: {
+        bindAuthority: (context) => ({ workspaceId: "host-workspace", connectionLineageId: context.connectionId }),
+        beforeAttempt: (attempt) => {
+          attempts.push(attempt);
+          return deny ? { allow: false, retryAfterSeconds: 45 } : { allow: true };
+        },
+      },
+    });
+    const saved = await request("/v1/connections/github/connect/api-key", { apiKey: "fixture-secret" });
+    expect(saved.status).toBe(200);
+    const connection = (await saved.json()).data;
+    expect(attempts[0]?.context).toMatchObject({ operation: "credential_validation", service: "github" });
+    const accounts = (await (await request("/v1/apps", undefined, "runtime-token")).json()).data;
+    deny = true;
+    for (const [route, body] of [
+      ["/v1/actions/github.get_current_user", { input: {}, connectionId: "untrusted" }],
+      ["/v1/proxy/github", { method: "GET", endpoint: "/user", connectionId: "untrusted" }],
+    ] as const) {
+      const response = await runtime.fetch(
+        new Request(`${publicOrigin}${route}`, {
+          method: "POST",
+          headers: {
+            authorization: "Bearer runtime-token",
+            "content-type": "application/json",
+            "x-oo-connector-alias": accounts[0].alias,
+          },
+          body: JSON.stringify(body),
+        }),
+      );
+      expect(response.status).toBe(429);
+      expect(response.headers.get("Retry-After")).toBe("45");
+      expect(await response.json()).toMatchObject({ errorCode: "rate_limited" });
+      expect(attempts.at(-1)?.context.connectionId).toBe(connection.id);
+      expect(attempts.at(-1)?.authority).toMatchObject({
+        workspaceId: "host-workspace",
+        connectionLineageId: connection.id,
+      });
+    }
+    const refused = await request("/v1/connections/github/connect/api-key", {
+      apiKey: "another-secret",
+    });
+    expect(refused.status).toBe(429);
+    expect(refused.headers.get("Retry-After")).toBe("45");
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(JSON.stringify(attempts)).not.toMatch(/fixture-secret|another-secret|untrusted/);
+  });
   it("serves the existing connection and action contracts under a host mount without a dashboard", async () => {
     const options = await fixture();
     vi.stubGlobal(

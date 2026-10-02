@@ -7,6 +7,7 @@ import {
   createProviderTimeout,
   isAbortLikeError,
   providerFetch,
+  ProviderDispatchRequestError,
   providerUserAgent,
 } from "../providers/provider-runtime.ts";
 
@@ -153,6 +154,7 @@ async function requestToken(input: TokenRequest): Promise<OAuthTokenResult> {
     });
   } catch (error) {
     timeout.cleanup();
+    if (error instanceof ProviderDispatchRequestError) throw error;
     if (input.signal?.aborted) {
       throw input.createError("OAuth token request was cancelled.");
     }

@@ -1,6 +1,7 @@
 import type { CatalogStore } from "../catalog-store.ts";
 import type { ConnectionService } from "../connection-service.ts";
 import type { ActionPolicySnapshot } from "../core/action-policy.ts";
+import type { ProviderHttpDispatchOptions } from "../core/provider-http-dispatch.ts";
 import type { IProviderLoader } from "../providers/provider-loader.ts";
 import type { RuntimeGrant } from "../server/storage/runtime-token-service.ts";
 import type { IntegrationDefinition } from "./common/integration.ts";
@@ -11,6 +12,7 @@ import type { TriggerSubscription, TriggerStore } from "./store.ts";
 
 import { ConnectionError } from "../connection-service.ts";
 import { optionalInteger, optionalRecord } from "../core/cast.ts";
+import { withProviderHttpDispatch } from "../core/provider-http-dispatch.ts";
 import { HttpRequestError } from "../server/api/http-utils.ts";
 import { mapConnectionErrorStatus } from "../server/api/runtime-api.ts";
 import { resolveTriggerConfig } from "./common/config.ts";
@@ -23,6 +25,7 @@ import {
 import { executeSubscription, executeSubscriptionOperation } from "./subscriptions.ts";
 
 interface TriggerRunnerOptions {
+  providerHttpDispatch?: ProviderHttpDispatchOptions;
   catalog: CatalogStore;
   providerLoader: IProviderLoader;
   connections: ConnectionService;
@@ -234,10 +237,15 @@ export class TriggerRunner {
       const proxy: ConnectorProxy = {
         execute: async (request, requestSignal) => {
           signal.throwIfAborted();
-          const result = await executor(request, {
-            getCredential: target.getCredential,
-            signal: requestSignal ?? signal,
-          });
+          const result = await withProviderHttpDispatch(
+            { operation: "trigger", service, connectionId: stored.id, connectionRevision: stored.revision },
+            () =>
+              executor(request, {
+                getCredential: target.getCredential,
+                signal: requestSignal ?? signal,
+              }),
+            this.options.providerHttpDispatch,
+          );
           if (result.ok) return result.response;
           const status = optionalInteger(optionalRecord(result.error.details)?.status) ?? 502;
           return { status, data: { error: result.error.message } };

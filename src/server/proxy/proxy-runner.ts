@@ -1,18 +1,22 @@
 import type { CatalogStore } from "../../catalog-store.ts";
 import type { ConnectionService } from "../../connection-service.ts";
 import type { ActionPolicySnapshot } from "../../core/action-policy.ts";
+import type { ProviderHttpDispatchOptions } from "../../core/provider-http-dispatch.ts";
 import type { RuntimeLogger, ProxyRequestInput, ProxyResponse } from "../../core/types.ts";
 import type { IProviderLoader } from "../../providers/provider-loader.ts";
 import type { SaasExecutionService } from "../../saas/saas-execution-service.ts";
 
 import { ConnectionError } from "../../connection-service.ts";
 import { optionalInteger, optionalRecord, requiredRecord, requiredString } from "../../core/cast.ts";
+import { withProviderHttpDispatch } from "../../core/provider-http-dispatch.ts";
+import { ProviderDispatchRequestError, toProviderExecutionError } from "../../providers/provider-runtime.ts";
 import { SaasError } from "../../saas/saas-client.ts";
 import { mapConnectionErrorStatus } from "../api/runtime-api.ts";
 
 export type ProxyFailureStatus = 400 | 402 | 403 | 404 | 409 | 413 | 429 | 500 | 501 | 502 | 503 | 504;
 
 export interface ProxyRunnerOptions {
+  providerHttpDispatch?: ProviderHttpDispatchOptions;
   catalog: CatalogStore;
   providerLoader: IProviderLoader;
   connections: ConnectionService;
@@ -174,10 +178,20 @@ export class ProxyRunner {
           message: `Proxy execution is not supported for ${provider.service}.`,
           meta: { service: provider.service },
         };
-      const result = await executor(request.input, {
-        getCredential: target.getCredential,
-        signal: input.signal,
-      });
+      const result = await withProviderHttpDispatch(
+        {
+          operation: "proxy",
+          service: provider.service,
+          connectionId: target.summary?.id,
+          connectionRevision: target.connectionRevision,
+        },
+        () =>
+          executor(request.input, {
+            getCredential: target.getCredential,
+            signal: input.signal,
+          }),
+        this.options.providerHttpDispatch,
+      );
       const durationMs = Date.now() - startedAtMs;
       if (result.ok) {
         this.options.logger?.info(
@@ -222,6 +236,16 @@ export class ProxyRunner {
           message: error.message,
           data: error.retryAfter ? { details: { retryAfter: error.retryAfter } } : undefined,
           meta: { service: provider.service, executionId, remoteExecutionId: error.remoteExecutionId },
+        };
+      }
+      if (error instanceof ProviderDispatchRequestError) {
+        return {
+          ok: false,
+          status: 429,
+          errorCode: "rate_limited",
+          message: error.message,
+          data: toProviderExecutionError(error, error.message).error?.details,
+          meta: { service: provider.service },
         };
       }
       if (error instanceof ConnectionError) {
