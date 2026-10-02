@@ -266,7 +266,9 @@ export function createGuardedFetch(options: GuardedFetchOptions = {}): typeof fe
     if (redirectMode !== "follow") {
       // Keep the screened URL and method stable while admission is queued. A
       // caller may otherwise mutate a URL or RequestInit before transport runs.
-      return fetchTransport(request ?? url.toString(), init ? { ...init } : init);
+      return dispatchAttempt
+        ? fetchTransport(request ?? (input instanceof URL ? new URL(url) : url.toString()), init ? { ...init } : init)
+        : fetchTransport(input, init);
     }
 
     let method = (init?.method ?? request?.method ?? "GET").toUpperCase();

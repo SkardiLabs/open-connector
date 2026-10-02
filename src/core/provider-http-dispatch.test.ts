@@ -149,7 +149,7 @@ describe("provider HTTP dispatch", () => {
       },
     });
     expect(transport).toHaveBeenCalledExactlyOnceWith(
-      "https://example.com/private",
+      new URL("https://example.com/private"),
       expect.objectContaining({ method: "GET" }),
     );
   });
