@@ -48,7 +48,8 @@ export async function observeProviderResponseBody(
     return response;
   }
   if (!response.body) {
-    const noBody = options.method === "HEAD" || [204, 205, 304].includes(response.status);
+    const finalHttpResponse = response.status >= 200 && response.status <= 599;
+    const noBody = finalHttpResponse && (options.method === "HEAD" || [204, 205, 304].includes(response.status));
     void settle(noBody ? "eof" : "unknown");
     return response;
   }

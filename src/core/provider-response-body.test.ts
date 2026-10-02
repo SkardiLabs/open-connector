@@ -313,6 +313,16 @@ describe("provider response body completion observer", () => {
     reader.releaseLock();
   });
 
+  it.each(["error", "opaque"])("does not treat a status-zero %s HEAD response as real no-body proof", async (type) => {
+    const response = Response.error();
+    Object.defineProperty(response, "type", { value: type });
+    const onBodyEnd = vi.fn();
+    expect(await observeProviderResponseBody(response, { method: "HEAD", observation: "body", onBodyEnd })).toBe(
+      response,
+    );
+    expect(onBodyEnd).toHaveBeenCalledExactlyOnceWith({ kind: "unknown" });
+  });
+
   it("unread bodies stay outstanding; abort is unknown and cannot later become EOF", async () => {
     const controller = new AbortController();
     const onBodyEnd = vi.fn();

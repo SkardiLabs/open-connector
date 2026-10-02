@@ -83,6 +83,28 @@ describe("provider HTTP dispatch", () => {
     expect(transport).toHaveBeenCalledOnce();
   });
 
+  it("keeps a status-zero HEAD response unchanged without an observer and unknown when observed", async () => {
+    const original = Response.error();
+    const transport = vi.fn<typeof fetch>().mockResolvedValue(original);
+    expect(
+      await withProviderHttpDispatch(
+        context,
+        () => createProviderFetch({ fetch: transport })("https://example.com", { method: "HEAD" }),
+        { beforeAttempt: () => ({ allow: true }) },
+      ),
+    ).toBe(original);
+    const onBodyEnd = vi.fn();
+    expect(
+      await withProviderHttpDispatch(
+        context,
+        () => createProviderFetch({ fetch: transport })("https://example.com", { method: "HEAD" }),
+        { beforeAttempt: () => ({ allow: true, onBodyEnd }) },
+      ),
+    ).toBe(original);
+    expect(onBodyEnd).toHaveBeenCalledExactlyOnceWith({ kind: "unknown" });
+    expect(transport).toHaveBeenCalledTimes(2);
+  });
+
   it("treats redirect-body cancellation as unknown and observes the next hop independently", async () => {
     const transport = vi
       .fn<typeof fetch>()
