@@ -26,6 +26,7 @@ const context = {
   service: "example",
   actionId: "example.read",
   connectionId: "connection-1",
+  connectionName: "binding-1",
 } as const;
 
 describe("provider HTTP dispatch", () => {
@@ -302,7 +303,7 @@ describe("provider HTTP dispatch", () => {
     vi.stubGlobal("fetch", transport);
     const rewrapped = createProviderFetch({ fetch: providerFetch, skipDnsValidation: true });
     const customPolicy = createGuardedFetch({ fetch: providerFetch, skipDnsValidation: true });
-    const beforeAttempt = vi.fn(() => ({ allow: true as const }));
+    const beforeAttempt = vi.fn((_attempt: ProviderHttpAttempt) => ({ allow: true as const }));
     await withProviderHttpDispatch(
       context,
       async () => {
@@ -314,6 +315,11 @@ describe("provider HTTP dispatch", () => {
     );
     expect(beforeAttempt).toHaveBeenCalledTimes(3);
     expect(transport).toHaveBeenCalledTimes(3);
+    expect(beforeAttempt.mock.calls.map(([attempt]) => attempt.context.connectionName)).toEqual([
+      "binding-1",
+      "binding-1",
+      "binding-1",
+    ]);
   });
 
   it("rejects blocked initial and redirect URLs before admission", async () => {
@@ -413,7 +419,7 @@ describe("provider HTTP dispatch", () => {
 
   it("freezes allowlisted context and authority without exposing credential-bearing request data", async () => {
     const attempts: ProviderHttpAttempt[] = [];
-    const inputContext = { ...context, secret: "context-secret" };
+    const inputContext = { ...context, connectionName: "binding-1", secret: "context-secret" };
     const authority = { workspaceId: "workspace-1", connectionLineageId: "lineage-1", token: "authority-secret" };
     const transport = vi.fn<typeof fetch>().mockResolvedValue(new Response("ok"));
     await withProviderHttpDispatch(
@@ -436,6 +442,9 @@ describe("provider HTTP dispatch", () => {
     expect(Object.isFrozen(attempt)).toBe(true);
     expect(Object.isFrozen(attempt.context)).toBe(true);
     expect(Object.isFrozen(attempt.authority)).toBe(true);
+    inputContext.connectionName = "replaced-binding";
+    expect(attempt.context.connectionName).toBe("binding-1");
+    expect(Reflect.set(attempt.context, "connectionName", "forged-binding")).toBe(false);
     authority.workspaceId = "changed";
     expect(attempt.authority.workspaceId).toBe("workspace-1");
   });

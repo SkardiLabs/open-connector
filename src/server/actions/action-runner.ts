@@ -159,6 +159,7 @@ export class ActionRunner {
               actionId: action.id,
               executionId,
               connectionId: connection.summary?.id,
+              connectionName: connection.summary?.connectionName,
               connectionRevision: connection.kind === "local" ? connection.connectionRevision : undefined,
             },
             () =>

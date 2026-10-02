@@ -196,6 +196,7 @@ export class ProxyRunner {
           operation: "proxy",
           service: provider.service,
           connectionId: target.summary?.id,
+          connectionName: target.summary?.connectionName,
           connectionRevision: target.connectionRevision,
         },
         () =>

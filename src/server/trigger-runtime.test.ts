@@ -1,4 +1,5 @@
 import type { IConnectionStore } from "../connection-service.ts";
+import type { ProviderHttpAttempt } from "../core/provider-http-dispatch.ts";
 import type { ProviderDefinition, ProviderProxyExecutor } from "../core/types.ts";
 import type { ConnectorProxyRequest } from "../triggers/common/proxy.ts";
 import type { ConnectApp } from "./connect-app.ts";
@@ -34,6 +35,7 @@ let failDelete: boolean;
 let loseCreate: boolean;
 let useNativeProxy: boolean;
 let denyProviderDispatch: boolean;
+let dispatchAttempts: ProviderHttpAttempt[];
 let fixtureProviderLoader: ProviderLoader;
 
 beforeEach(async () => {
@@ -45,6 +47,7 @@ beforeEach(async () => {
   loseCreate = false;
   useNativeProxy = false;
   denyProviderDispatch = false;
+  dispatchAttempts = [];
   const sources: ProviderDefinition[] = [github, gmail, linear, feishu];
   const modulePaths: Record<string, string> = {
     github: "../providers/github/executors.ts",
@@ -139,7 +142,10 @@ beforeEach(async () => {
   fixtureProviderLoader = new ProviderLoader(modules);
   connector = await createConnectApp({
     providerHttpDispatch: {
-      beforeAttempt: () => (denyProviderDispatch ? { allow: false, retryAfterSeconds: 46 } : { allow: true }),
+      beforeAttempt: (attempt) => {
+        dispatchAttempts.push(attempt);
+        return denyProviderDispatch ? { allow: false, retryAfterSeconds: 46 } : { allow: true };
+      },
     },
     catalog: createCatalogStore(sources),
     providerLoader: fixtureProviderLoader,
@@ -264,6 +270,12 @@ describe("Trigger runtime HTTP boundary", () => {
     expect(response.headers.get("Retry-After")).toBe("46");
     expect(await response.json()).toMatchObject({ errorCode: "rate_limited" });
     expect(fetcher).not.toHaveBeenCalled();
+    expect(dispatchAttempts).toHaveLength(1);
+    expect(dispatchAttempts[0]?.context).toMatchObject({
+      operation: "trigger",
+      connectionId,
+      connectionName: "work",
+    });
   });
 
   it("rejects same-account reauthorization between credential resolution and Trigger target binding", async () => {

@@ -839,7 +839,7 @@ export class ConnectionService {
     if (!this.store.updateCredentialSnapshot && (this.providerHttpDispatch || isProviderHttpDispatchConfigured()))
       throw new ProviderDispatchRequestError();
     const nextCredential = await withProviderHttpDispatchResult(
-      { operation: "oauth", service, connectionId: id, connectionRevision: revision },
+      { operation: "oauth", service, connectionId: id, connectionName, connectionRevision: revision },
       () => refresher.refresh(service, credential),
       this.providerHttpDispatch,
     );

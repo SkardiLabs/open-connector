@@ -94,6 +94,7 @@ describe("headless runtime", () => {
       expect(response.headers.get("Retry-After")).toBe("45");
       expect(await response.json()).toMatchObject({ errorCode: "rate_limited" });
       expect(attempts.at(-1)?.context.connectionId).toBe(connection.id);
+      expect(attempts.at(-1)?.context.connectionName).toBe(accounts[0].alias);
       expect(attempts.at(-1)?.authority).toMatchObject({
         workspaceId: "host-workspace",
         connectionLineageId: connection.id,

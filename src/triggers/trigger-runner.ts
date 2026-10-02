@@ -251,7 +251,13 @@ export class TriggerRunner {
         execute: async (request, requestSignal) => {
           signal.throwIfAborted();
           const result = await withProviderHttpDispatch(
-            { operation: "trigger", service, connectionId: stored.id, connectionRevision: target.connectionRevision },
+            {
+              operation: "trigger",
+              service,
+              connectionId: stored.id,
+              connectionName: stored.connectionName,
+              connectionRevision: target.connectionRevision,
+            },
             () =>
               executor(request, {
                 getCredential: target.getCredential,

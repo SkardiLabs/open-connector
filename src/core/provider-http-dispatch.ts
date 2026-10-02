@@ -7,6 +7,8 @@ export interface ProviderDispatchContext {
   readonly actionId?: string;
   readonly executionId?: string;
   readonly connectionId?: string;
+  /** Alias from the resolved stored connection, not the caller's requested alias. */
+  readonly connectionName?: string;
   readonly connectionRevision?: string;
 }
 
@@ -113,6 +115,7 @@ export function withProviderHttpDispatch<T>(
     actionId: context.actionId,
     executionId: context.executionId,
     connectionId: context.connectionId,
+    connectionName: context.connectionName,
     connectionRevision: context.connectionRevision,
   });
   return scopes.run(

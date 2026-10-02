@@ -1,5 +1,5 @@
 import type { IConnectionStore, StoredConnection, StoredLocalConnection } from "./connection-service.ts";
-import type { ProviderHttpDispatchOptions } from "./core/provider-http-dispatch.ts";
+import type { ProviderHttpAttempt, ProviderHttpDispatchOptions } from "./core/provider-http-dispatch.ts";
 import type { ActionExecutor, CredentialValidators, ProviderDefinition, ResolvedCredential } from "./core/types.ts";
 import type { MarketplaceService } from "./marketplace/marketplace-service.ts";
 import type { OAuthClientConfig } from "./oauth/oauth-client-config-service.ts";
@@ -824,6 +824,52 @@ describe("ConnectionService", () => {
       expect.objectContaining({ accessToken: "fresh-token" }),
     ]);
     expect(fetcher).toHaveBeenCalledOnce();
+  });
+
+  it("binds OAuth refresh to the stored alias and the credential revision being refreshed", async () => {
+    const store = new MemoryConnectionStore();
+    const oauthClientConfigs = createOAuthClientConfigs([oauthProvider]);
+    const attempts: ProviderHttpAttempt[] = [];
+    const service = createService([oauthProvider], {
+      oauthCredentials: new OAuthCredentialRefreshService(oauthClientConfigs),
+      store,
+      providerHttpDispatch: {
+        beforeAttempt: (attempt) => {
+          attempts.push(attempt);
+          return { allow: true };
+        },
+      },
+    });
+    await oauthClientConfigs.upsertConfig({
+      service: "example",
+      clientId: "client-id",
+      clientSecret: "client-secret",
+    });
+    const original = await store.set("example", "binding-fixture", {
+      authType: "oauth2",
+      accessToken: "expired-token",
+      tokenType: "Bearer",
+      refreshToken: "refresh-token",
+      expiresAt: "2026-01-01T00:00:00.000Z",
+      profile: testProfile,
+      metadata: {},
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ access_token: "fresh-token", expires_in: 3600, token_type: "Bearer" })),
+    );
+    const target = await service.resolveForExecution("example", undefined, original.id);
+    expect(attempts).toHaveLength(1);
+    expect(attempts[0]?.context).toMatchObject({
+      operation: "oauth",
+      service: "example",
+      connectionId: original.id,
+      connectionName: "binding-fixture",
+      connectionRevision: original.revision,
+    });
+    if (target.kind !== "local") throw new Error("Expected local connection");
+    expect(target.connectionRevision).not.toBe(original.revision);
+    expect(JSON.stringify(attempts)).not.toMatch(/expired-token|refresh-token|client-secret/);
   });
 
   it("pairs shared refreshed bytes with their atomic revision despite subsequent same-account reauthorization", async () => {
