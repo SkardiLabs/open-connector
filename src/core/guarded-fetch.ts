@@ -142,6 +142,8 @@ const bodyHeaders = ["content-encoding", "content-language", "content-length", "
 
 /** Base transport behind each guarded fetch (undefined = global fetch) so re-wrapping never stacks guards. */
 const guardedFetchBases = new WeakMap<typeof fetch, typeof fetch | undefined>();
+/** Retain admission when a caller replaces the egress policy without stacking guards. */
+const guardedFetchDispatchers = new WeakMap<typeof fetch, GuardedHttpDispatcher | undefined>();
 
 let defaultLookupOverridden = false;
 let defaultLookupOverride: GuardedFetchDnsLookup | null = null;
@@ -203,11 +205,12 @@ export function unwrapGuardedFetch(fetcher: typeof fetch | undefined): typeof fe
  */
 export function createGuardedFetch(options: GuardedFetchOptions = {}): typeof fetch {
   const baseFetch = unwrapGuardedFetch(options.fetch);
+  const dispatchAttempt = options.dispatchAttempt ?? (options.fetch && guardedFetchDispatchers.get(options.fetch));
   const createError = options.createError ?? ((message: string) => new TypeError(message));
   const maxRedirects = options.maxRedirects ?? defaultMaxRedirects;
   const guardedFetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const transport = baseFetch ?? globalThis.fetch;
-    const requestId = options.dispatchAttempt ? crypto.randomUUID() : "";
+    const requestId = dispatchAttempt ? crypto.randomUUID() : "";
     let redirectHop = 0;
     const fetchTransport = async (
       transportInput: RequestInfo | URL,
@@ -221,8 +224,8 @@ export function createGuardedFetch(options: GuardedFetchOptions = {}): typeof fe
         }
       };
       const transportRequest = transportInput instanceof Request ? transportInput : undefined;
-      return options.dispatchAttempt
-        ? options.dispatchAttempt(
+      return dispatchAttempt
+        ? dispatchAttempt(
             Object.freeze({
               requestId,
               redirectHop,
@@ -261,7 +264,9 @@ export function createGuardedFetch(options: GuardedFetchOptions = {}): typeof fe
 
     const redirectMode = init?.redirect ?? request?.redirect ?? "follow";
     if (redirectMode !== "follow") {
-      return fetchTransport(input, init);
+      // Keep the screened URL and method stable while admission is queued. A
+      // caller may otherwise mutate a URL or RequestInit before transport runs.
+      return fetchTransport(request ?? url.toString(), init ? { ...init } : init);
     }
 
     let method = (init?.method ?? request?.method ?? "GET").toUpperCase();
@@ -330,6 +335,7 @@ export function createGuardedFetch(options: GuardedFetchOptions = {}): typeof fe
   }) as typeof fetch;
 
   guardedFetchBases.set(guardedFetch, baseFetch);
+  guardedFetchDispatchers.set(guardedFetch, dispatchAttempt);
   return guardedFetch;
 }
 

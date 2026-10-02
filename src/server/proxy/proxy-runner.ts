@@ -66,6 +66,15 @@ export class ProxyRunner {
 
   async run(input: RunProxyInput): Promise<ProxyRunResult> {
     const provider = this.options.catalog.providers.find((candidate) => candidate.service === input.service);
+    return withProviderHttpDispatch(
+      { operation: "proxy", service: provider?.service },
+      () => this.runProxy(input),
+      this.options.providerHttpDispatch,
+    );
+  }
+
+  private async runProxy(input: RunProxyInput): Promise<ProxyRunResult> {
+    const provider = this.options.catalog.providers.find((candidate) => candidate.service === input.service);
     if (!provider) {
       return {
         ok: false,

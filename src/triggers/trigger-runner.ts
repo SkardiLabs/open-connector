@@ -49,6 +49,15 @@ export class TriggerRunner {
   }
 
   async run(input: RunTriggerInput): Promise<unknown> {
+    const provider = this.options.catalog.providers.find((candidate) => candidate.service === input.service);
+    return withProviderHttpDispatch(
+      { operation: "trigger", service: provider?.service },
+      () => this.runTrigger(input),
+      this.options.providerHttpDispatch,
+    );
+  }
+
+  private async runTrigger(input: RunTriggerInput): Promise<unknown> {
     const decision = input.policy.evaluateTrigger(input.triggerId);
     if (!decision.allowed) throw new HttpRequestError(decision.code, decision.message, 403);
     const stateful = input.request.operation !== "read" && input.request.operation !== "options";

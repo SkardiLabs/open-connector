@@ -60,6 +60,15 @@ export class ActionRunner {
 
   async run(input: RunActionInput): Promise<ActionRunResult | undefined> {
     const action = this.options.catalog.actionsById.get(input.actionId);
+    return withProviderHttpDispatch(
+      { operation: "action", service: action?.service, actionId: action?.id },
+      () => this.runAction(input),
+      this.options.providerHttpDispatch,
+    );
+  }
+
+  private async runAction(input: RunActionInput): Promise<ActionRunResult | undefined> {
+    const action = this.options.catalog.actionsById.get(input.actionId);
     if (!action) {
       this.options.logger?.warn(
         {

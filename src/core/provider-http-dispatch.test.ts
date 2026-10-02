@@ -137,6 +137,23 @@ describe("provider HTTP dispatch", () => {
     expect(transport).toHaveBeenCalledOnce();
   });
 
+  it("snapshots a manual request target and method before delayed admission", async () => {
+    const url = new URL("https://example.com/private");
+    const init: RequestInit = { method: "GET", redirect: "manual" };
+    const transport = vi.fn<typeof fetch>().mockResolvedValue(new Response("ok"));
+    await withProviderHttpDispatch(context, () => createProviderFetch({ fetch: transport })(url, init), {
+      beforeAttempt: async () => {
+        url.href = "http://127.0.0.1/private";
+        init.method = "DELETE";
+        return { allow: true };
+      },
+    });
+    expect(transport).toHaveBeenCalledExactlyOnceWith(
+      "https://example.com/private",
+      expect.objectContaining({ method: "GET" }),
+    );
+  });
+
   it("admits every real provider-internal retry", async () => {
     const transport = vi
       .fn<typeof fetch>()
@@ -162,17 +179,19 @@ describe("provider HTTP dispatch", () => {
     const transport = vi.fn<typeof fetch>().mockResolvedValue(new Response("ok"));
     vi.stubGlobal("fetch", transport);
     const rewrapped = createProviderFetch({ fetch: providerFetch, skipDnsValidation: true });
+    const customPolicy = createGuardedFetch({ fetch: providerFetch, skipDnsValidation: true });
     const beforeAttempt = vi.fn(() => ({ allow: true as const }));
     await withProviderHttpDispatch(
       context,
       async () => {
         await providerFetch("https://example.com");
         await rewrapped("https://example.com");
+        await customPolicy("https://example.com");
       },
       { beforeAttempt },
     );
-    expect(beforeAttempt).toHaveBeenCalledTimes(2);
-    expect(transport).toHaveBeenCalledTimes(2);
+    expect(beforeAttempt).toHaveBeenCalledTimes(3);
+    expect(transport).toHaveBeenCalledTimes(3);
   });
 
   it("rejects blocked initial and redirect URLs before admission", async () => {
