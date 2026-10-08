@@ -307,3 +307,39 @@ async function executeDropboxAction(
     context,
   );
 }
+
+describe("Dropbox listing inventory qualification", () => {
+  it("qualifies both listing actions only after validating the complete raw page", async () => {
+    setDefaultGuardedFetchDnsLookup(async () => [{ address: "8.8.8.8", family: 4 }]);
+    const file = { ".tag": "file", id: "id:a", name: "a.pdf", path_lower: "/f/a.pdf" };
+    const deleted = { ".tag": "deleted", name: "a.pdf", path_lower: "/f/a.pdf" };
+    for (const action of ["list_folder", "list_folder_continue"]) {
+      const input = action === "list_folder" ? { path: "/f", includeDeleted: true } : { cursor: "opaque" };
+      for (const entries of [[], [file, deleted, file]]) {
+        vi.stubGlobal(
+          "fetch",
+          vi.fn(async () => Response.json({ entries, cursor: "terminal", has_more: false })),
+        );
+        const result = await executors[`dropbox.${action}`]!(input, dnsContext);
+        expect(result).toMatchObject({
+          ok: true,
+          output: { inventoryQualified: true, cursor: "terminal", hasMore: false },
+        });
+        if (result.ok) expect((result.output as { entries: unknown[] }).entries).toHaveLength(entries.length);
+      }
+      for (const payload of [
+        { entries: [null], cursor: "c", has_more: false },
+        { entries: [], cursor: "c" },
+        { entries: [], cursor: "c", has_more: "false" },
+        { entries: [file, { ".tag": "deleted", name: "a" }], cursor: "c", has_more: false },
+      ]) {
+        vi.stubGlobal(
+          "fetch",
+          vi.fn(async () => Response.json(payload)),
+        );
+        const result = await executors[`dropbox.${action}`]!(input, dnsContext);
+        expect(result).toMatchObject({ ok: false, error: { code: "provider_error", details: { status: 502 } } });
+      }
+    }
+  });
+});

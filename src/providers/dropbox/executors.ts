@@ -246,10 +246,33 @@ async function listFolderContinue(input: Record<string, unknown>, accessToken: s
 }
 
 function normalizeListFolderResult(payload: Record<string, unknown>) {
+  // Qualification belongs before permissive metadata projection: otherwise
+  // discarded entries or an absent has_more look like a complete inventory.
+  if (
+    !Array.isArray(payload.entries) ||
+    payload.entries.length > 2000 ||
+    typeof payload.has_more !== "boolean" ||
+    typeof payload.cursor !== "string" ||
+    !payload.cursor ||
+    payload.cursor.length > 8192 ||
+    payload.entries.some((entry: unknown) => {
+      const item = asOptionalObject(entry);
+      if (!item) return true;
+      return (
+        !["file", "folder", "deleted"].includes(String(item[".tag"])) ||
+        !asOptionalString(item.name) ||
+        !asOptionalString(item.path_lower)?.startsWith("/") ||
+        (item[".tag"] !== "deleted" && !asOptionalString(item.id))
+      );
+    })
+  ) {
+    throw new ProviderRequestError(502, "dropbox listing contract invalid");
+  }
   return {
-    entries: readObjectArray(payload.entries).map(mapDropboxMetadata),
+    entries: payload.entries.map(mapDropboxMetadata),
     cursor: requireString(payload.cursor, "dropbox cursor"),
-    hasMore: optionalBoolean(payload.has_more) ?? false,
+    hasMore: payload.has_more,
+    inventoryQualified: true,
   };
 }
 

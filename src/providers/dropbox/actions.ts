@@ -199,6 +199,10 @@ const listFolderOutputSchema = s.object(
     hasMore: s.boolean({
       description: "Whether more entries are available.",
     }),
+    inventoryQualified: s.boolean({
+      description:
+        "True when the raw page and every entry passed inventory validation before normalization. This qualifies the page, not a multi-page snapshot.",
+    }),
   },
   {
     description: "A Dropbox folder listing page.",
