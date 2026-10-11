@@ -23,6 +23,7 @@ import type { IRuntimeTokenStore, RuntimeTokenRecord } from "./runtime-token-ser
 import type { PoolClient } from "pg";
 
 import { Pool } from "pg";
+import { normalizeConnectionName } from "../../connection-service.ts";
 import { parseRuntimeActionHttpResult } from "../api/runtime-api.ts";
 import { PlainTextSecretCodec } from "../secrets/secret-codec-core.ts";
 import { assertPostgresSchemaReady } from "./postgres-migrations.ts";
@@ -100,6 +101,7 @@ export class PostgresRuntimeDatabase implements RuntimeDatabase {
 
   async resetRuntimeData(): Promise<void> {
     await runInTransaction(this.pool, async (client) => {
+      await client.query("update connection_retirements set generation = $1", [crypto.randomUUID()]);
       await client.query(`
         delete from connections;
         delete from oauth_client_configs;
@@ -258,11 +260,48 @@ class PostgresConnectionStore implements IConnectionStore {
       : undefined;
   }
 
+  async getRetirementGeneration(service: string, connectionName: string): Promise<string> {
+    await this.pool.query(
+      "insert into connection_retirements (service, connection_name, generation) values ($1, $2, $3) on conflict do nothing",
+      [service, connectionName, crypto.randomUUID()],
+    );
+    const result = await this.pool.query<RuntimeRow>(
+      "select generation from connection_retirements where service = $1 and connection_name = $2",
+      [service, connectionName],
+    );
+    return readString(result.rows[0]!, "generation");
+  }
+
   async set(service: string, connectionName: string, credential: ResolvedCredential): Promise<StoredConnection> {
+    const stored = await this.writeCredential(service, connectionName, credential);
+    if (!stored) throw new Error("Connection upsert did not return the stored row.");
+    return stored;
+  }
+
+  async setIfCurrentGeneration(
+    service: string,
+    connectionName: string,
+    credential: ResolvedCredential,
+    retirementGeneration: string,
+  ): Promise<StoredConnection | undefined> {
+    return this.writeCredential(service, connectionName, credential, retirementGeneration);
+  }
+
+  private async writeCredential(
+    service: string,
+    connectionName: string,
+    credential: ResolvedCredential,
+    retirementGeneration?: string,
+  ): Promise<StoredConnection | undefined> {
     const result = await this.pool.query<RuntimeRow>(
       `
         insert into connections (id, revision, service, connection_name, value, updated_at)
-        values ($1, $2, $3, $4, $5, $6)
+        select $1, $2, $3, $4, $5, $6
+        where $7::text is null or exists (
+          select 1 from connection_retirements
+          where service = $3 and connection_name = $4 and generation = $7
+          for update
+        )
         on conflict(service, connection_name) do update set
           revision = excluded.revision,
           value = excluded.value,
@@ -276,9 +315,11 @@ class PostgresConnectionStore implements IConnectionStore {
         connectionName,
         await this.secretCodec.encode(JSON.stringify(credential)),
         new Date().toISOString(),
+        retirementGeneration ?? null,
       ],
     );
-    const row = result.rows[0]!;
+    const row = result.rows[0];
+    if (!row) return undefined;
     return {
       id: readString(row, "id"),
       revision: readString(row, "revision"),
@@ -310,10 +351,21 @@ class PostgresConnectionStore implements IConnectionStore {
   }
 
   async delete(service: string, connectionName: string): Promise<void> {
-    await this.pool.query("delete from connections where service = $1 and connection_name = $2", [
-      service,
-      connectionName,
-    ]);
+    await runInTransaction(this.pool, async (client) => {
+      // Lock this fence before touching either credential or state, matching publication's lock order.
+      await client.query(
+        "insert into connection_retirements (service, connection_name, generation) values ($1, $2, $3) on conflict(service, connection_name) do update set generation = excluded.generation",
+        [service, connectionName, crypto.randomUUID()],
+      );
+      await client.query("delete from oauth_states where service = $1 and connection_name = $2", [
+        service,
+        connectionName,
+      ]);
+      await client.query("delete from connections where service = $1 and connection_name = $2", [
+        service,
+        connectionName,
+      ]);
+    });
   }
 
   async list(): Promise<StoredConnection[]> {
@@ -388,13 +440,24 @@ class PostgresOAuthStateStore implements IOAuthStateStore {
   }
 
   async set(state: OAuthAuthorizationState): Promise<void> {
+    const connectionName = normalizeConnectionName(state.connectionName);
     await this.pool.query(
-      `
-        insert into oauth_states (state, value, created_at)
-        values ($1, $2, $3)
-        on conflict(state) do update set value = excluded.value, created_at = excluded.created_at
-      `,
-      [state.state, await this.secretCodec.encode(JSON.stringify(state)), state.createdAt],
+      `insert into oauth_states (state, value, created_at, service, connection_name)
+       select $1, $2, $3, $4, $5
+       where exists (
+         select 1 from connection_retirements
+         where service = $4 and connection_name = $5 and generation = $6 for update
+       )
+       on conflict(state) do update set value = excluded.value, created_at = excluded.created_at,
+         service = excluded.service, connection_name = excluded.connection_name`,
+      [
+        state.state,
+        await this.secretCodec.encode(JSON.stringify(state)),
+        state.createdAt,
+        state.service,
+        connectionName,
+        state.retirementGeneration,
+      ],
     );
   }
 

@@ -51,6 +51,7 @@ describe("SqliteRuntimeDatabase", () => {
       "0010_connection_revision.sql",
       "0011_runtime_token_connection_scope.sql",
       "0012_marketplace.sql",
+      "0013_connection_retirement.sql",
     ];
     expect(entries.filter((entry) => entry.message === "sqlite migration started")).toEqual(
       migrations.map((migration) => ({ fields: { migration }, message: "sqlite migration started" })),
@@ -108,6 +109,7 @@ describe("SqliteRuntimeDatabase", () => {
     });
     await first.oauthStateStore.set({
       service: "gmail",
+      retirementGeneration: await first.connectionStore.getRetirementGeneration("gmail", "default"),
       state: "state-1",
       createdAt: "2026-06-30T00:00:00.000Z",
     });
@@ -164,11 +166,13 @@ describe("SqliteRuntimeDatabase", () => {
     const database = new SqliteRuntimeDatabase(await createDatabasePath());
     await database.oauthStateStore.set({
       service: "gmail",
+      retirementGeneration: await database.connectionStore.getRetirementGeneration("gmail", "default"),
       state: "expired",
       createdAt: "2026-06-30T00:00:00.000Z",
     });
     await database.oauthStateStore.set({
       service: "gmail",
+      retirementGeneration: await database.connectionStore.getRetirementGeneration("gmail", "default"),
       state: "current",
       createdAt: "2026-06-30T00:00:01.000Z",
     });
@@ -661,6 +665,7 @@ describe("SqliteRuntimeDatabase", () => {
     });
     await encrypted.oauthStateStore.set({
       service: "github",
+      retirementGeneration: await encrypted.connectionStore.getRetirementGeneration("github", "default"),
       state: "state-encrypted",
       createdAt: "2026-06-30T00:00:00.000Z",
       clientConfig: {
@@ -859,6 +864,7 @@ describe("SqliteRuntimeDatabase", () => {
     });
     await database.oauthStateStore.set({
       service: "gmail",
+      retirementGeneration: await database.connectionStore.getRetirementGeneration("gmail", "default"),
       state: "state-rotation",
       createdAt: "2026-06-30T00:00:00.000Z",
       clientConfig: {

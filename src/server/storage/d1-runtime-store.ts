@@ -22,6 +22,7 @@ import type { RuntimeRow } from "./runtime-sql.ts";
 import type { IRunLogStore, RunLog, RunLogListInput, RunLogPage, RunLogWriteResult } from "./runtime-store.ts";
 import type { IRuntimeTokenStore, RuntimeTokenRecord } from "./runtime-token-service.ts";
 
+import { normalizeConnectionName } from "../../connection-service.ts";
 import { parseRuntimeActionHttpResult } from "../api/runtime-api.ts";
 import { PlainTextSecretCodec } from "../secrets/secret-codec-core.ts";
 import {
@@ -137,12 +138,50 @@ export class D1ConnectionStore implements IConnectionStore {
       : undefined;
   }
 
+  async getRetirementGeneration(service: string, connectionName: string): Promise<string> {
+    await this.database
+      .prepare(
+        "insert into connection_retirements (service, connection_name, generation) values (?, ?, ?) on conflict do nothing",
+      )
+      .bind(service, connectionName, crypto.randomUUID())
+      .run();
+    const row = await this.database
+      .prepare("select generation from connection_retirements where service = ? and connection_name = ?")
+      .bind(service, connectionName)
+      .first<RuntimeRow>();
+    return readString(row!, "generation");
+  }
+
   async set(service: string, connectionName: string, credential: ResolvedCredential): Promise<StoredConnection> {
+    const stored = await this.writeCredential(service, connectionName, credential);
+    if (!stored) throw new Error("Connection upsert did not return the stored row.");
+    return stored;
+  }
+
+  async setIfCurrentGeneration(
+    service: string,
+    connectionName: string,
+    credential: ResolvedCredential,
+    retirementGeneration: string,
+  ): Promise<StoredConnection | undefined> {
+    return this.writeCredential(service, connectionName, credential, retirementGeneration);
+  }
+
+  private async writeCredential(
+    service: string,
+    connectionName: string,
+    credential: ResolvedCredential,
+    retirementGeneration?: string,
+  ): Promise<StoredConnection | undefined> {
     const row = await this.database
       .prepare(
         `
         insert into connections (id, revision, service, connection_name, value, updated_at)
-        values (?, ?, ?, ?, ?, ?)
+        select ?, ?, ?, ?, ?, ?
+        where ? is null or exists (
+          select 1 from connection_retirements
+          where service = ? and connection_name = ? and generation = ?
+        )
         on conflict(service, connection_name) do update set
           revision = excluded.revision,
           value = excluded.value,
@@ -157,11 +196,16 @@ export class D1ConnectionStore implements IConnectionStore {
         connectionName,
         await this.secretCodec.encode(JSON.stringify(credential)),
         new Date().toISOString(),
+        retirementGeneration ?? null,
+        service,
+        connectionName,
+        retirementGeneration ?? null,
       )
       .first<RuntimeRow>();
+    if (!row) return undefined;
     return {
-      id: readString(row!, "id"),
-      revision: readString(row!, "revision"),
+      id: readString(row, "id"),
+      revision: readString(row, "revision"),
       service,
       connectionName,
       credential,
@@ -192,10 +236,19 @@ export class D1ConnectionStore implements IConnectionStore {
   }
 
   async delete(service: string, connectionName: string): Promise<void> {
-    await this.database
-      .prepare("delete from connections where service = ? and connection_name = ?")
-      .bind(service, connectionName)
-      .run();
+    await this.database.batch([
+      this.database
+        .prepare(
+          "insert into connection_retirements (service, connection_name, generation) values (?, ?, ?) on conflict(service, connection_name) do update set generation = excluded.generation",
+        )
+        .bind(service, connectionName, crypto.randomUUID()),
+      this.database
+        .prepare("delete from oauth_states where service = ? and connection_name = ?")
+        .bind(service, connectionName),
+      this.database
+        .prepare("delete from connections where service = ? and connection_name = ?")
+        .bind(service, connectionName),
+    ]);
   }
 
   async list(): Promise<StoredConnection[]> {
@@ -270,15 +323,28 @@ export class D1OAuthStateStore implements IOAuthStateStore {
   }
 
   async set(state: OAuthAuthorizationState): Promise<void> {
+    const connectionName = normalizeConnectionName(state.connectionName);
     await this.database
       .prepare(
-        `
-        insert into oauth_states (state, value, created_at)
-        values (?, ?, ?)
-        on conflict(state) do update set value = excluded.value, created_at = excluded.created_at
-      `,
+        `insert into oauth_states (state, value, created_at, service, connection_name)
+       select ?, ?, ?, ?, ?
+       where exists (
+         select 1 from connection_retirements
+         where service = ? and connection_name = ? and generation = ?
+       )
+       on conflict(state) do update set value = excluded.value, created_at = excluded.created_at,
+         service = excluded.service, connection_name = excluded.connection_name`,
       )
-      .bind(state.state, await this.secretCodec.encode(JSON.stringify(state)), state.createdAt)
+      .bind(
+        state.state,
+        await this.secretCodec.encode(JSON.stringify(state)),
+        state.createdAt,
+        state.service,
+        connectionName,
+        state.service,
+        connectionName,
+        state.retirementGeneration,
+      )
       .run();
   }
 
