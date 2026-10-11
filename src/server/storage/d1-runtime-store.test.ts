@@ -1,11 +1,9 @@
 import type { RuntimeActionHttpResult } from "../api/runtime-api.ts";
-import type { D1DatabaseBinding, D1PreparedStatementBinding } from "../cloudflare/cloudflare-bindings.ts";
 
-import { readFileSync } from "node:fs";
-import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import { AesGcmSecretCodec } from "../secrets/secret-codec.ts";
 import { D1RuntimeDatabase } from "./d1-runtime-store.ts";
+import { SqliteD1Database } from "./d1-test-database.ts";
 import { RuntimeTokenService } from "./runtime-token-service.ts";
 
 const githubProfile = {
@@ -124,6 +122,7 @@ describe("D1RuntimeDatabase", () => {
 
     await database.oauthStateStore.set({
       service: "gmail",
+      retirementGeneration: await database.connectionStore.getRetirementGeneration("gmail", "default"),
       state: "state-1",
       createdAt: "2026-06-30T00:00:00.000Z",
     });
@@ -139,11 +138,13 @@ describe("D1RuntimeDatabase", () => {
     const database = new D1RuntimeDatabase(new SqliteD1Database());
     await database.oauthStateStore.set({
       service: "gmail",
+      retirementGeneration: await database.connectionStore.getRetirementGeneration("gmail", "default"),
       state: "expired",
       createdAt: "2026-06-30T00:00:00.000Z",
     });
     await database.oauthStateStore.set({
       service: "gmail",
+      retirementGeneration: await database.connectionStore.getRetirementGeneration("gmail", "default"),
       state: "current",
       createdAt: "2026-06-30T00:00:01.000Z",
     });
@@ -161,6 +162,7 @@ describe("D1RuntimeDatabase", () => {
     });
     await database.oauthStateStore.set({
       service: "github",
+      retirementGeneration: await database.connectionStore.getRetirementGeneration("github", "default"),
       state: "state-1",
       createdAt: "2026-06-30T00:00:00.000Z",
       clientConfig: {
@@ -529,87 +531,4 @@ function successResponse(data: unknown): RuntimeActionHttpResult {
       meta: {},
     },
   };
-}
-
-class SqliteD1Database implements D1DatabaseBinding {
-  private readonly database = new DatabaseSync(":memory:");
-
-  constructor() {
-    this.database.exec(readFileSync(new URL("../../../migrations/0001_runtime.sql", import.meta.url), "utf8"));
-    this.database.exec(readFileSync(new URL("../../../migrations/0002_run_service.sql", import.meta.url), "utf8"));
-    this.database.exec(
-      readFileSync(new URL("../../../migrations/0003_action_idempotency.sql", import.meta.url), "utf8"),
-    );
-    this.database.exec(readFileSync(new URL("../../../migrations/0004_action_run_audit.sql", import.meta.url), "utf8"));
-    this.database.exec(readFileSync(new URL("../../../migrations/0005_run_retention.sql", import.meta.url), "utf8"));
-    this.database.exec(
-      readFileSync(new URL("../../../migrations/0006_connection_identity.sql", import.meta.url), "utf8"),
-    );
-    this.database.exec(readFileSync(new URL("../../../migrations/0007_runtime_policy.sql", import.meta.url), "utf8"));
-    this.database.exec(
-      readFileSync(new URL("../../../migrations/0008_runtime_token_policy.sql", import.meta.url), "utf8"),
-    );
-    this.database.exec(
-      readFileSync(new URL("../../../migrations/0009_runtime_token_proxy.sql", import.meta.url), "utf8"),
-    );
-    this.database.exec(
-      readFileSync(new URL("../../../migrations/0010_connection_revision.sql", import.meta.url), "utf8"),
-    );
-    this.database.exec(
-      readFileSync(new URL("../../../migrations/0011_runtime_token_connection_scope.sql", import.meta.url), "utf8"),
-    );
-  }
-
-  prepare(query: string): D1PreparedStatementBinding {
-    return new SqliteD1PreparedStatement(this.database, query);
-  }
-
-  exec(sql: string): void {
-    this.database.exec(sql);
-  }
-
-  value(
-    table: "connections" | "oauth_client_configs" | "oauth_states" | "idempotency_records",
-    keyColumn: "service" | "state" | "key_hash",
-    key: string,
-    valueColumn: "value" | "response_value" = "value",
-  ): string {
-    const row = this.database.prepare(`select ${valueColumn} from ${table} where ${keyColumn} = ?`).get(key) as
-      | Record<string, string>
-      | undefined;
-    return row?.[valueColumn] ?? "";
-  }
-}
-
-class SqliteD1PreparedStatement implements D1PreparedStatementBinding {
-  private readonly database: DatabaseSync;
-  private readonly query: string;
-  private readonly values: unknown[];
-
-  constructor(database: DatabaseSync, query: string, values: unknown[] = []) {
-    this.database = database;
-    this.query = query;
-    this.values = values;
-  }
-
-  bind(...values: unknown[]): D1PreparedStatementBinding {
-    return new SqliteD1PreparedStatement(this.database, this.query, values);
-  }
-
-  async first<T = Record<string, unknown>>(): Promise<T | null> {
-    return (this.database.prepare(this.query).get(...toSqlValues(this.values)) as T | undefined) ?? null;
-  }
-
-  async all<T = Record<string, unknown>>(): Promise<{ results: T[] }> {
-    return { results: this.database.prepare(this.query).all(...toSqlValues(this.values)) as T[] };
-  }
-
-  async run(): Promise<{ success: boolean; meta: { changes?: number } }> {
-    const result = this.database.prepare(this.query).run(...toSqlValues(this.values));
-    return { success: true, meta: { changes: Number(result.changes) } };
-  }
-}
-
-function toSqlValues(values: unknown[]): Array<string | number | bigint | null | Uint8Array> {
-  return values.map((value) => (value === undefined ? null : (value as string | number | bigint | null | Uint8Array)));
 }

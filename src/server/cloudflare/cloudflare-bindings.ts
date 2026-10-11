@@ -1,5 +1,7 @@
 export interface D1DatabaseBinding {
   prepare(query: string): D1PreparedStatementBinding;
+  /** D1 executes the statements atomically and rolls back the entire batch on failure. */
+  batch(statements: D1PreparedStatementBinding[]): Promise<unknown[]>;
 }
 
 export interface D1PreparedStatementBinding {

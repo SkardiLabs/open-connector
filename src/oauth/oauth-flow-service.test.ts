@@ -749,11 +749,13 @@ describe("OAuthFlowService", () => {
     vi.setSystemTime(new Date("2026-01-01T00:00:01.001Z"));
     await services.states.set({
       service: "example",
+      retirementGeneration: "expired-state-generation",
       state: "expired",
       createdAt: "2026-01-01T00:00:00.000Z",
     });
     await services.states.set({
       service: "example",
+      retirementGeneration: "expired-state-generation",
       state: "current",
       createdAt: "2026-01-01T00:00:00.001Z",
     });
@@ -776,6 +778,7 @@ describe("OAuthFlowService", () => {
     });
     await services.states.set({
       service: "example",
+      retirementGeneration: "expired-state-generation",
       state: "bad-created-at",
       createdAt: "not-a-date",
     });
@@ -1100,6 +1103,28 @@ class MemoryConnectionStore implements IConnectionStore {
     return this.store.get(createConnectionKey(service, connectionName));
   }
 
+  private readonly retirementGenerations = new Map<string, string>();
+
+  async getRetirementGeneration(service: string, connectionName: string): Promise<string> {
+    const key = JSON.stringify([service, connectionName]);
+    let generation = this.retirementGenerations.get(key);
+    if (!generation) {
+      generation = crypto.randomUUID();
+      this.retirementGenerations.set(key, generation);
+    }
+    return generation;
+  }
+
+  async setIfCurrentGeneration(
+    service: string,
+    connectionName: string,
+    credential: ResolvedCredential,
+    retirementGeneration: string,
+  ): Promise<StoredConnection | undefined> {
+    if ((await this.getRetirementGeneration(service, connectionName)) !== retirementGeneration) return undefined;
+    return this.set(service, connectionName, credential);
+  }
+
   async set(service: string, connectionName: string, credential: ResolvedCredential): Promise<StoredConnection> {
     const key = createConnectionKey(service, connectionName);
     const connection = {
@@ -1122,6 +1147,7 @@ class MemoryConnectionStore implements IConnectionStore {
   }
 
   async delete(service: string, connectionName: string): Promise<void> {
+    this.retirementGenerations.set(JSON.stringify([service, connectionName]), crypto.randomUUID());
     this.store.delete(createConnectionKey(service, connectionName));
   }
 

@@ -85,7 +85,16 @@ export interface ExecutionConnection {
  */
 export interface IConnectionStore {
   get(service: string, connectionName: string): Promise<StoredConnection | undefined>;
+  /** Durable fence retained even after the credential is absent. */
+  getRetirementGeneration(service: string, connectionName: string): Promise<string>;
   set(service: string, connectionName: string, credential: ResolvedCredential): Promise<StoredConnection>;
+  /** Atomically stores only if disconnect has not advanced the captured fence. */
+  setIfCurrentGeneration(
+    service: string,
+    connectionName: string,
+    credential: ResolvedCredential,
+    retirementGeneration: string,
+  ): Promise<StoredConnection | undefined>;
   updateCredential(input: StoredConnection): Promise<boolean>;
   delete(service: string, connectionName: string): Promise<void>;
   list(): Promise<StoredConnection[]>;
@@ -365,6 +374,7 @@ export class ConnectionService {
     credential: Extract<ResolvedCredential, { authType: "oauth2" }>,
     connectionNameInput?: string,
     signal?: AbortSignal,
+    retirementGeneration?: string,
   ): Promise<ConnectionSummary> {
     const provider = this.getAvailableProvider(service);
     if (!this.supportsAuth(provider, "oauth2")) {
@@ -372,6 +382,8 @@ export class ConnectionService {
     }
 
     const connectionName = normalizeConnectionName(connectionNameInput);
+    const expectedGeneration =
+      retirementGeneration ?? (await this.store.getRetirementGeneration(service, connectionName));
     let validation: CredentialValidationResult = {};
     try {
       validation = await this.validateOAuthCredential(service, credential, signal);
@@ -385,8 +397,21 @@ export class ConnectionService {
       ...credential,
       ...this.mergeCredentialRuntimeData(provider, "oauth2", credential, validation),
     };
-    const stored = await this.store.set(service, connectionName, storedCredential);
+    const stored = await this.store.setIfCurrentGeneration(
+      service,
+      connectionName,
+      storedCredential,
+      expectedGeneration,
+    );
+    if (!stored) {
+      throw new ConnectionError("connection_retired", "The connection was disconnected during authorization.");
+    }
     return this.createStoredConnectionSummary(provider, stored.id, connectionName, storedCredential);
+  }
+
+  /** Captures the durable disconnect fence before starting an OAuth authorization. */
+  async getRetirementGeneration(service: string, connectionName?: string): Promise<string> {
+    return this.store.getRetirementGeneration(service, normalizeConnectionName(connectionName));
   }
 
   async disconnect(

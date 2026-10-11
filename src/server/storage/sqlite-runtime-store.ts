@@ -22,6 +22,7 @@ import type { IRuntimeTokenStore, RuntimeTokenRecord } from "./runtime-token-ser
 
 import { readFileSync, readdirSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
+import { normalizeConnectionName } from "../../connection-service.ts";
 import { parseRuntimeActionHttpResult } from "../api/runtime-api.ts";
 import { PlainTextSecretCodec } from "../secrets/secret-codec-core.ts";
 import {
@@ -143,7 +144,9 @@ export class SqliteRuntimeDatabase implements RuntimeDatabase {
   }
 
   resetRuntimeData(): void {
-    this.database.exec(`
+    runInTransaction(this.database, () => {
+      this.database.prepare("update connection_retirements set generation = ?").run(crypto.randomUUID());
+      this.database.exec(`
       delete from connections;
       delete from oauth_client_configs;
       delete from oauth_states;
@@ -154,6 +157,7 @@ export class SqliteRuntimeDatabase implements RuntimeDatabase {
       delete from marketplace_config;
       delete from provider_preferences;
     `);
+    });
   }
 
   private initialize(logger?: RuntimeLogger): void {
@@ -231,12 +235,48 @@ export class SqliteConnectionStore implements IConnectionStore {
       : undefined;
   }
 
+  async getRetirementGeneration(service: string, connectionName: string): Promise<string> {
+    this.database
+      .prepare(
+        "insert into connection_retirements (service, connection_name, generation) values (?, ?, ?) on conflict do nothing",
+      )
+      .run(service, connectionName, crypto.randomUUID());
+    const row = this.database
+      .prepare("select generation from connection_retirements where service = ? and connection_name = ?")
+      .get(service, connectionName);
+    return readString(row!, "generation");
+  }
+
   async set(service: string, connectionName: string, credential: ResolvedCredential): Promise<StoredConnection> {
+    const stored = await this.writeCredential(service, connectionName, credential);
+    if (!stored) throw new Error("Connection upsert did not return the stored row.");
+    return stored;
+  }
+
+  async setIfCurrentGeneration(
+    service: string,
+    connectionName: string,
+    credential: ResolvedCredential,
+    retirementGeneration: string,
+  ): Promise<StoredConnection | undefined> {
+    return this.writeCredential(service, connectionName, credential, retirementGeneration);
+  }
+
+  private async writeCredential(
+    service: string,
+    connectionName: string,
+    credential: ResolvedCredential,
+    retirementGeneration?: string,
+  ): Promise<StoredConnection | undefined> {
     const row = this.database
       .prepare(
         `
         insert into connections (id, revision, service, connection_name, value, updated_at)
-        values (?, ?, ?, ?, ?, ?)
+        select ?, ?, ?, ?, ?, ?
+        where ? is null or exists (
+          select 1 from connection_retirements
+          where service = ? and connection_name = ? and generation = ?
+        )
         on conflict(service, connection_name) do update set
           revision = excluded.revision,
           value = excluded.value,
@@ -251,10 +291,12 @@ export class SqliteConnectionStore implements IConnectionStore {
         connectionName,
         await this.secretCodec.encode(JSON.stringify(credential)),
         new Date().toISOString(),
+        retirementGeneration ?? null,
+        service,
+        connectionName,
+        retirementGeneration ?? null,
       );
-    if (!row) {
-      throw new Error("Connection upsert did not return the stored row.");
-    }
+    if (!row) return undefined;
     return {
       id: readString(row, "id"),
       revision: readString(row, "revision"),
@@ -287,9 +329,19 @@ export class SqliteConnectionStore implements IConnectionStore {
   }
 
   async delete(service: string, connectionName: string): Promise<void> {
-    this.database
-      .prepare("delete from connections where service = ? and connection_name = ?")
-      .run(service, connectionName);
+    runInTransaction(this.database, () => {
+      this.database
+        .prepare(
+          "insert into connection_retirements (service, connection_name, generation) values (?, ?, ?) on conflict(service, connection_name) do update set generation = excluded.generation",
+        )
+        .run(service, connectionName, crypto.randomUUID());
+      this.database
+        .prepare("delete from oauth_states where service = ? and connection_name = ?")
+        .run(service, connectionName);
+      this.database
+        .prepare("delete from connections where service = ? and connection_name = ?")
+        .run(service, connectionName);
+    });
   }
 
   async list(): Promise<StoredConnection[]> {
@@ -364,20 +416,32 @@ export class SqliteOAuthStateStore implements IOAuthStateStore {
   }
 
   async set(state: OAuthAuthorizationState): Promise<void> {
+    const connectionName = normalizeConnectionName(state.connectionName);
     this.database
       .prepare(
-        `
-        insert into oauth_states (state, value, created_at)
-        values (?, ?, ?)
-        on conflict(state) do update set value = excluded.value, created_at = excluded.created_at
-      `,
+        `insert into oauth_states (state, value, created_at, service, connection_name)
+       select ?, ?, ?, ?, ?
+       where exists (
+         select 1 from connection_retirements
+         where service = ? and connection_name = ? and generation = ?
+       )
+       on conflict(state) do update set value = excluded.value, created_at = excluded.created_at,
+         service = excluded.service, connection_name = excluded.connection_name`,
       )
-      .run(state.state, await this.secretCodec.encode(JSON.stringify(state)), state.createdAt);
+      .run(
+        state.state,
+        await this.secretCodec.encode(JSON.stringify(state)),
+        state.createdAt,
+        state.service,
+        connectionName,
+        state.service,
+        connectionName,
+        state.retirementGeneration,
+      );
   }
 
   async take(state: string): Promise<OAuthAuthorizationState | undefined> {
-    const row = this.database.prepare("select value from oauth_states where state = ?").get(state);
-    this.database.prepare("delete from oauth_states where state = ?").run(state);
+    const row = this.database.prepare("delete from oauth_states where state = ? returning value").get(state);
     return row
       ? parseJson<OAuthAuthorizationState>(await this.secretCodec.decode(readString(row, "value")))
       : undefined;

@@ -7,6 +7,7 @@ import type {
 } from "./oauth-client-config-service.ts";
 
 import { createHash, randomBytes } from "node:crypto";
+import { normalizeConnectionName } from "../connection-service.ts";
 import { requestAuthorizationCodeToken } from "./oauth-token.ts";
 
 /**
@@ -36,6 +37,7 @@ export interface OAuthAuthorizationCompleteInput {
 export interface OAuthAuthorizationState {
   service: string;
   connectionName?: string;
+  retirementGeneration: string;
   state: string;
   createdAt: string;
   pkceCodeVerifier?: string;
@@ -82,8 +84,10 @@ export class OAuthFlowService {
   }
 
   async startAuthorization(input: OAuthAuthorizationStartInput): Promise<OAuthAuthorizationStart> {
-    const { service, connectionName } = input;
+    const { service } = input;
+    const connectionName = normalizeConnectionName(input.connectionName);
     this.connections.assertProviderAvailable(service);
+    const retirementGeneration = await this.connections.getRetirementGeneration(service, connectionName);
     const auth = this.clientConfigs.getOAuthDefinition(service);
     const config = input.clientConfig
       ? this.resolveCustomClientConfig(service, input.clientConfig)
@@ -99,6 +103,7 @@ export class OAuthFlowService {
     await this.states.set({
       service,
       connectionName,
+      retirementGeneration,
       state,
       createdAt: now.toISOString(),
       pkceCodeVerifier,
@@ -141,7 +146,7 @@ export class OAuthFlowService {
     if (!pending) {
       throw new OAuthFlowError("invalid_oauth_state", "OAuth state is missing or expired.");
     }
-    if (isExpiredOAuthState(pending, this.stateMaxAgeMs)) {
+    if (isExpiredOAuthState(pending, this.stateMaxAgeMs) || typeof pending.retirementGeneration !== "string") {
       throw new OAuthFlowError("invalid_oauth_state", "OAuth state is missing or expired.");
     }
 
@@ -184,7 +189,13 @@ export class OAuthFlowService {
       },
     };
 
-    await this.connections.setOAuthCredential(pending.service, oauthCredential, pending.connectionName, input.signal);
+    await this.connections.setOAuthCredential(
+      pending.service,
+      oauthCredential,
+      pending.connectionName,
+      input.signal,
+      pending.retirementGeneration,
+    );
     return {
       service: pending.service,
       connected: true,
