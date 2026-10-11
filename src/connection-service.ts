@@ -148,6 +148,13 @@ interface SaasExecutionConnection {
  */
 export interface IConnectionStore {
   get(service: string, connectionName: string): Promise<StoredConnection | undefined>;
+  getRetirementGeneration(service: string, connectionName: string): Promise<string>;
+  setIfCurrentGeneration(
+    service: string,
+    connectionName: string,
+    credential: ResolvedCredential,
+    retirementGeneration: string,
+  ): Promise<StoredLocalConnection | undefined>;
   set(service: string, connectionName: string, credential: ResolvedCredential): Promise<StoredLocalConnection>;
   updateCredential(input: StoredLocalConnection, refresh?: boolean): Promise<boolean>;
   delete(service: string, connectionName: string): Promise<void>;
@@ -449,16 +456,25 @@ export class ConnectionService {
     credential: Extract<ResolvedCredential, { authType: "oauth2" }>,
     connectionNameInput?: string,
     signal?: AbortSignal,
+    retirementGeneration?: string,
   ): Promise<ConnectionSummary> {
-    const storedCredential = await this.prepareOAuthCredential(service, credential, signal);
     const connectionName = normalizeConnectionName(connectionNameInput);
-    const stored = await this.store.set(service, connectionName, storedCredential);
+    const generation = retirementGeneration ?? (await this.store.getRetirementGeneration(service, connectionName));
+    const storedCredential = await this.prepareOAuthCredential(service, credential, signal);
+    const stored = await this.store.setIfCurrentGeneration(service, connectionName, storedCredential, generation);
+    if (!stored)
+      throw new ConnectionError("connection_retired", "The connection was disconnected during authorization.");
     return this.createStoredConnectionSummary(
       this.getAvailableProvider(service),
       stored.id,
       connectionName,
       storedCredential,
     );
+  }
+
+  /** Capture the durable disconnect fence before sending the user to the provider. */
+  async getRetirementGeneration(service: string, connectionName?: string): Promise<string> {
+    return this.store.getRetirementGeneration(service, normalizeConnectionName(connectionName));
   }
 
   async prepareOAuthCredential(

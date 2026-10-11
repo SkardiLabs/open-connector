@@ -64,6 +64,7 @@ export function saasProjectStoreTests(getDatabase: () => RuntimeDatabase): void 
         service: "local",
         connectionName: "work",
         state: crypto.randomUUID(),
+        retirementGeneration: crypto.randomUUID(),
         createdAt: new Date().toISOString(),
         expiresAt: new Date(Date.now() + 60_000).toISOString(),
       };
@@ -282,6 +283,7 @@ export function saasProjectStoreTests(getDatabase: () => RuntimeDatabase): void 
         service: "example",
         connectionName: "local",
         state: crypto.randomUUID(),
+        retirementGeneration: crypto.randomUUID(),
         createdAt: new Date().toISOString(),
         expiresAt: new Date(Date.now() + 60_000).toISOString(),
       });
@@ -300,6 +302,7 @@ export function saasProjectStoreTests(getDatabase: () => RuntimeDatabase): void 
         service: "example",
         connectionName: "local",
         state: crypto.randomUUID(),
+        retirementGeneration: crypto.randomUUID(),
         createdAt: new Date().toISOString(),
         expiresAt: new Date(Date.now() + 60_000).toISOString(),
       });
@@ -316,6 +319,7 @@ export function saasProjectStoreTests(getDatabase: () => RuntimeDatabase): void 
         service: "example",
         connectionName: "local",
         state,
+        retirementGeneration: crypto.randomUUID(),
         createdAt: new Date().toISOString(),
         expiresAt: new Date(Date.now() + 60_000).toISOString(),
       });

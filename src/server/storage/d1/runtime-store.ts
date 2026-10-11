@@ -5,7 +5,6 @@ import type {
   StoredMarketplaceConfig,
 } from "../../../marketplace/marketplace-service.ts";
 import type { IOAuthClientConfigStore, OAuthClientConfig } from "../../../oauth/oauth-client-config-service.ts";
-import type { IOAuthStateStore, OAuthAuthorizationState } from "../../../oauth/oauth-flow-service.ts";
 import type { D1DatabaseBinding } from "../../cloudflare/cloudflare-bindings.ts";
 import type { ISecretCodec } from "../../secrets/secret-codec-core.ts";
 import type { RequestTransaction } from "../connection-request-store.ts";
@@ -25,6 +24,7 @@ import { parseRuntimeActionHttpResult } from "../../api/runtime-api.ts";
 import { PlainTextSecretCodec } from "../../secrets/secret-codec-core.ts";
 import { ConnectionRequestStore } from "../connection-request-store.ts";
 import { SqlConnectionStore } from "../connection-store.ts";
+import { SqlOAuthStateStore } from "../oauth-state-store.ts";
 import {
   listRunLogs,
   parseJson,
@@ -51,7 +51,7 @@ export class D1RuntimeDatabase implements RuntimeDatabase {
   readonly connectionStore: SqlConnectionStore;
   readonly triggerStore: SqlTriggerStore;
   readonly oauthClientConfigStore: D1OAuthClientConfigStore;
-  readonly oauthStateStore: D1OAuthStateStore;
+  readonly oauthStateStore: SqlOAuthStateStore;
   readonly runtimeTokenStore: D1RuntimeTokenStore;
   readonly runtimePolicyStore: D1RuntimePolicyStore;
   readonly runLogStore: D1RunLogStore;
@@ -69,7 +69,7 @@ export class D1RuntimeDatabase implements RuntimeDatabase {
     this.triggerStore = new SqlTriggerStore(transaction, secretCodec);
     this.saasProjectStore = new SaasProjectStore(transaction, secretCodec);
     this.oauthClientConfigStore = new D1OAuthClientConfigStore(database, secretCodec);
-    this.oauthStateStore = new D1OAuthStateStore(database, secretCodec);
+    this.oauthStateStore = new SqlOAuthStateStore(transaction, secretCodec);
     this.runtimeTokenStore = new D1RuntimeTokenStore(database);
     this.runtimePolicyStore = new D1RuntimePolicyStore(database);
     this.runLogStore = new D1RunLogStore(database, options.runLimit ?? DEFAULT_RUN_LIMIT);
@@ -162,43 +162,6 @@ export class D1OAuthClientConfigStore implements IOAuthClientConfigStore {
     return await Promise.all(
       results.map(async (row) => parseJson<OAuthClientConfig>(await this.secretCodec.decode(readString(row, "value")))),
     );
-  }
-}
-
-export class D1OAuthStateStore implements IOAuthStateStore {
-  private readonly database: D1DatabaseBinding;
-  private readonly secretCodec: ISecretCodec;
-
-  constructor(database: D1DatabaseBinding, secretCodec: ISecretCodec) {
-    this.database = database;
-    this.secretCodec = secretCodec;
-  }
-
-  async deleteCreatedBefore(cutoff: string): Promise<void> {
-    await this.database.prepare("delete from oauth_states where created_at < ?").bind(cutoff).run();
-  }
-
-  async set(state: OAuthAuthorizationState): Promise<void> {
-    await this.database
-      .prepare(
-        `
-        insert into oauth_states (state, value, created_at)
-        values (?, ?, ?)
-        on conflict(state) do update set value = excluded.value, created_at = excluded.created_at
-      `,
-      )
-      .bind(state.state, await this.secretCodec.encode(JSON.stringify(state)), state.createdAt)
-      .run();
-  }
-
-  async take(state: string): Promise<OAuthAuthorizationState | undefined> {
-    const row = await this.database
-      .prepare("delete from oauth_states where state = ? returning value")
-      .bind(state)
-      .first<RuntimeRow>();
-    return row
-      ? parseJson<OAuthAuthorizationState>(await this.secretCodec.decode(readString(row, "value")))
-      : undefined;
   }
 }
 

@@ -126,6 +126,7 @@ describe("D1RuntimeDatabase", () => {
 
     await database.oauthStateStore.set({
       service: "gmail",
+      retirementGeneration: await database.connectionStore.getRetirementGeneration("gmail", "default"),
       state: "state-1",
       createdAt: "2026-06-30T00:00:00.000Z",
     });
@@ -141,11 +142,13 @@ describe("D1RuntimeDatabase", () => {
     const database = new D1RuntimeDatabase(new SqliteD1Database(), { secretCodec: new AesGcmSecretCodec("saas-test") });
     await database.oauthStateStore.set({
       service: "gmail",
+      retirementGeneration: await database.connectionStore.getRetirementGeneration("gmail", "default"),
       state: "expired",
       createdAt: "2026-06-30T00:00:00.000Z",
     });
     await database.oauthStateStore.set({
       service: "gmail",
+      retirementGeneration: await database.connectionStore.getRetirementGeneration("gmail", "default"),
       state: "current",
       createdAt: "2026-06-30T00:00:01.000Z",
     });
@@ -163,6 +166,7 @@ describe("D1RuntimeDatabase", () => {
     });
     await database.oauthStateStore.set({
       service: "github",
+      retirementGeneration: await database.connectionStore.getRetirementGeneration("github", "default"),
       state: "state-1",
       createdAt: "2026-06-30T00:00:00.000Z",
       clientConfig: {

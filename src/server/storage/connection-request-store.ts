@@ -4,6 +4,7 @@ import type { OAuthAuthorizationState } from "../../oauth/oauth-flow-service.ts"
 import type { ISecretCodec } from "../secrets/secret-codec-core.ts";
 import type { RuntimeRow } from "./runtime-sql.ts";
 
+import { initializeRetirement, lockRetirement, retirementMatches } from "./connection-retirement.ts";
 import { queueSaasConnections, queueSaasRequests } from "./saas-project-store.ts";
 
 export interface ConnectionRequest {
@@ -80,11 +81,14 @@ export class ConnectionRequestStore {
   async create(pending: PendingConnectionRequest): Promise<void> {
     const now = Date.parse(pending.createdAt);
     const value = await this.secretCodec.encode(JSON.stringify(pending));
+    const fence = retirementMatches(pending.service, pending.connectionName, pending.retirementGeneration);
     await this.transaction([
+      initializeRetirement(pending.service, pending.connectionName, pending.retirementGeneration),
+      lockRetirement(pending.service, pending.connectionName, pending.retirementGeneration),
       ...this.retireRequests(pending.owner, pending.service, now),
       {
-        sql: `insert into connection_requests (id, owner, service, state, phase, status, value, expires_at, created_at, updated_at)
-          values (?, ?, ?, ?, 'pending', 'initiated', ?, ?, ?, ?)`,
+        sql: `insert into connection_requests (id, owner, service, state, phase, status, value, expires_at, created_at, updated_at, connection_name)
+          select ?, ?, ?, ?, 'pending', 'initiated', ?, ?, ?, ?, ? where ${fence.sql}`,
         values: [
           pending.connectionRequestId,
           pending.owner,
@@ -94,6 +98,8 @@ export class ConnectionRequestStore {
           pending.expiresAt,
           now,
           now,
+          pending.connectionName,
+          ...fence.values,
         ],
       },
     ]);
@@ -160,8 +166,8 @@ export class ConnectionRequestStore {
         : null;
     signal?.throwIfAborted();
     const now = new Date();
-    const active =
-      "exists (select 1 from connection_requests where kind = 'local' and id = ? and phase = 'processing')";
+    const fence = retirementMatches(pending.service, pending.connectionName, pending.retirementGeneration);
+    const active = `exists (select 1 from connection_requests where kind = 'local' and id = ? and phase = 'processing') and ${fence.sql}`;
     const write: RequestStatement = pending.target
       ? {
           sql: `update connections set value = ?, revision = ?, updated_at = ?, source = 'local',
@@ -176,6 +182,7 @@ export class ConnectionRequestStore {
             id,
             pending.target.revision,
             pending.connectionRequestId,
+            ...fence.values,
             accountId,
           ],
         }
@@ -191,14 +198,17 @@ export class ConnectionRequestStore {
             now.toISOString(),
             accountId,
             pending.connectionRequestId,
+            ...fence.values,
           ],
         };
     const results = await this.transaction([
+      lockRetirement(pending.service, pending.connectionName, pending.retirementGeneration),
       { sql: "update connections set revision = revision where id = ?", values: [id] },
       queueSaasConnections(`id = ? and revision = ? and ${active}`, [
         id,
         pending.target?.revision ?? "",
         pending.connectionRequestId,
+        ...fence.values,
       ]),
       write,
       {
@@ -207,7 +217,7 @@ export class ConnectionRequestStore {
         values: [id, now.getTime(), pending.connectionRequestId, id, revision],
       },
     ]);
-    return results[2].length ? id : undefined;
+    return results[3].length ? id : undefined;
   }
 
   private retireRequests(owner: string, service: string, now: number): RequestStatement[] {

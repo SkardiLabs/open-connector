@@ -104,6 +104,7 @@ describe("PostgreSQL migrations with PGlite", () => {
           { name: "0015_saas_cleanup_runtime.sql" },
           { name: "0016_trigger_policy.sql" },
           { name: "0017_trigger_subscriptions.sql" },
+          { name: "0018_connection_retirement.sql" },
         ],
       });
 
@@ -167,6 +168,7 @@ describe("PostgreSQL migrations with a custom migration source", () => {
           { name: "0015_saas_cleanup_runtime.sql" },
           { name: "0016_trigger_policy.sql" },
           { name: "0017_trigger_subscriptions.sql" },
+          { name: "0018_connection_retirement.sql" },
           { name: "9998_custom.sql" },
         ],
       });
@@ -267,6 +269,7 @@ describe("PostgresRuntimeDatabase with PGlite", () => {
     });
     await database.oauthStateStore.set({
       service: "gmail",
+      retirementGeneration: await database.connectionStore.getRetirementGeneration("gmail", "default"),
       state: "state-1",
       createdAt: "2026-06-30T00:00:00.000Z",
     });
@@ -289,11 +292,13 @@ describe("PostgresRuntimeDatabase with PGlite", () => {
   it("deletes OAuth states created before a cutoff", async () => {
     await database.oauthStateStore.set({
       service: "gmail",
+      retirementGeneration: await database.connectionStore.getRetirementGeneration("gmail", "default"),
       state: "expired",
       createdAt: "2026-06-30T00:00:00.000Z",
     });
     await database.oauthStateStore.set({
       service: "gmail",
+      retirementGeneration: await database.connectionStore.getRetirementGeneration("gmail", "default"),
       state: "current",
       createdAt: "2026-06-30T00:00:01.000Z",
     });
@@ -503,6 +508,7 @@ describe("PostgresRuntimeDatabase with PGlite", () => {
     });
     await database.oauthStateStore.set({
       service: "gmail",
+      retirementGeneration: await database.connectionStore.getRetirementGeneration("gmail", "default"),
       state: "state-rotation",
       createdAt: "2026-06-30T00:00:00.000Z",
     });
