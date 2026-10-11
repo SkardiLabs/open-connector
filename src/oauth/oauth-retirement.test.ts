@@ -145,6 +145,19 @@ describe("OAuth retirement across runtime sessions", () => {
             vi.fn(async () => Response.json({ access_token: "fresh-token", token_type: "Bearer" })),
           );
           const fresh = await start(second.flow, name, `${name}_fresh`);
+          if (mode === "request") {
+            // A pre-disconnect create resuming after fresh consent must not supersede that new request.
+            await fixture.first.connectionRequestStore.create({
+              service: "example",
+              connectionName: name,
+              retirementGeneration: oldGeneration,
+              owner: `${name}_fresh`,
+              connectionRequestId: crypto.randomUUID(),
+              state: `${name}_stale-create`,
+              createdAt: new Date().toISOString(),
+              expiresAt: new Date(Date.now() + 60_000).toISOString(),
+            });
+          }
           await expect(second.flow.completeAuthorization({ state: fresh.state, code: "fresh-code" })).resolves.toEqual({
             service: "example",
             connected: true,
