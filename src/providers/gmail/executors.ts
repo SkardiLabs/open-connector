@@ -21,6 +21,7 @@ import {
   resolveReplyHeaders,
   summarizeGmailMessage,
 } from "./message.ts";
+import { createGmailRateLimitedFetch } from "./rate-limit.ts";
 
 const gmailApiBaseUrl = "https://gmail.googleapis.com/gmail/v1";
 const detailHydrationBatchSize = 10;
@@ -198,7 +199,9 @@ export const executors: ProviderExecutors = defineProviderExecutors<ActionContex
   handlers: gmailActionHandlers,
   async createContext(context: ExecutionContext, fetcher: typeof fetch): Promise<ActionContext> {
     const credential = await requireOAuthCredential(context, "gmail");
-    return { userId: "me", accessToken: credential.accessToken, fetcher };
+    // A fresh limiter per action call: its retry budget is this call's, and
+    // a throttle seen by one hydration pauses the rest of this call's fan-out.
+    return { userId: "me", accessToken: credential.accessToken, fetcher: createGmailRateLimitedFetch(fetcher) };
   },
 });
 
