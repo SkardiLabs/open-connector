@@ -54,7 +54,11 @@ import { clearLocalAuthCookie, createLocalAuthMiddleware, readLocalAuthSession, 
 import { getResponseCachePolicy } from "./api/cache-policy.ts";
 import { createConnectionRoutes } from "./api/connection-routes.ts";
 import { HttpRequestError, internalError, jsonError, notFound, readJsonBody } from "./api/http-utils.ts";
-import { renderOAuthCompletionPage } from "./api/oauth-completion-page.ts";
+import {
+  oauthProviderErrorCode,
+  renderOAuthCompletionPage,
+  renderOAuthRefusedPage,
+} from "./api/oauth-completion-page.ts";
 import { policyRequestMaxBytes, readRuntimePolicyRules, readTokenPolicy } from "./api/policy-input.ts";
 import { serializeRuntimeTriggerPermissions } from "./api/runtime-api.ts";
 import {
@@ -153,6 +157,8 @@ export interface IConnectServerOptions {
   saasProject?: SaasProjectService;
   saas?: SaasExecutionService;
   saasOAuth?: SaasOAuthService;
+  /** Origins a provider-refusal page may post its result to (`OOMOL_CONNECT_OAUTH_RESULT_ORIGINS`). */
+  oauthResultOrigins?: readonly string[];
 }
 
 /**
@@ -1371,21 +1377,30 @@ export class ConnectServer {
         ? await this.options.oauthFlow.rejectAuthorization(state, providerError === "access_denied")
         : undefined;
       if (returnUri) return context.redirect(returnUri);
-      const providerErrorDescription = context.req.query("error_description");
+      // A runtime authorization (`POST /api/oauth/authorizations`) has no
+      // return address: it was started from a popup. End the authorization so
+      // it cannot complete later, and give the popup a page that tells the
+      // person what happened and, for an allowed opener, posts the result.
+      const errorCode = oauthProviderErrorCode(providerError);
+      // Only a refusal that ended a pending authorization names its state.
+      // A late duplicate callback for a state another callback already
+      // completed must not tell the opener that authorization failed.
+      const discarded = state ? await this.options.oauthFlow.discardAuthorization(state) : false;
       this.options.logger?.warn(
         {
           ...logContext,
           errorCode: "oauth_provider_error",
-          providerError,
-          providerErrorDescription,
+          providerError: errorCode,
+          providerErrorDescription: context.req.query("error_description"),
         },
-        "oauth callback failed",
+        "oauth callback refused by provider",
       );
-      return jsonError(
-        context,
-        400,
-        "oauth_provider_error",
-        `OAuth provider returned error "${providerError}"${providerErrorDescription ? `: ${providerErrorDescription}` : "."}`,
+      return context.html(
+        renderOAuthRefusedPage({
+          code: errorCode,
+          state: discarded ? state : undefined,
+          resultOrigins: this.options.oauthResultOrigins ?? [],
+        }),
       );
     }
     if (!state || !code) {

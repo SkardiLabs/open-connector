@@ -12,6 +12,7 @@ import { ActionPolicyService } from "../core/action-policy.ts";
 import { setEgressTrustedHosts, setPrivateNetworkAccessAllowed } from "../core/request.ts";
 import { ProviderLoader } from "../providers/provider-loader.ts";
 import { executorModules } from "../providers/registry.generated.ts";
+import { normalizeOAuthResultOrigins } from "./api/oauth-completion-page.ts";
 import { createRuntimeJwtVerifier } from "./api/runtime-jwt.ts";
 import { createConnectApp } from "./connect-app.ts";
 import { getConnectorAssetDirectory } from "./connector-assets.ts";
@@ -87,6 +88,8 @@ export interface ConnectorRuntimeOptions {
   actionPolicy?: ActionPolicyConfig;
   /** Services, or `*`, whose connections may carry their own OAuth client instead of the configured one. */
   allowedCustomOAuth?: string[];
+  /** Exact origins a provider-refusal callback page may post its result to. Never `*`. */
+  oauthResultOrigins?: string[];
   transitFiles?: ConnectorTransitFileOptions;
   /** Maximum number of recent action run records to retain. */
   runLimit?: number;
@@ -146,6 +149,9 @@ async function openRuntime(options: ConnectorRuntimeOptions): Promise<ConnectorR
   if (!Number.isFinite(ttlSeconds) || ttlSeconds <= 0)
     throw new Error("transitFiles.ttlSeconds must be a positive number of seconds.");
   if (!Number.isFinite(maxBytes) || maxBytes <= 0) throw new Error("transitFiles.maxBytes must be a positive number.");
+  // The same rules as `OOMOL_CONNECT_OAUTH_RESULT_ORIGINS`: a host passing the option directly must not be able
+  // to make the refusal page post OAuth state to `*` or to a value that is not an origin.
+  const oauthResultOrigins = normalizeOAuthResultOrigins(options.oauthResultOrigins ?? []);
   const assetDirectory = getConnectorAssetDirectory();
   const assets = options.assets ?? {
     catalogDir: join(assetDirectory, "catalog/apps"),
@@ -224,6 +230,7 @@ async function openRuntime(options: ConnectorRuntimeOptions): Promise<ConnectorR
       verifyRuntimeJwt,
       actionPolicy: new ActionPolicyService(options.actionPolicy),
       allowedCustomOAuth: options.allowedCustomOAuth,
+      oauthResultOrigins,
       logger: options.logger,
       serveDocumentation: options.apiReference ?? false,
     });
