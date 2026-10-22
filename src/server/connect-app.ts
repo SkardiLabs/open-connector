@@ -23,6 +23,7 @@ import { SaasProjectService } from "../saas/saas-project-service.ts";
 import { TriggerMaintenance } from "../triggers/maintenance.ts";
 import { TriggerRunner } from "../triggers/trigger-runner.ts";
 import { ActionRunner } from "./actions/action-runner.ts";
+import { normalizeOAuthResultOrigins } from "./api/oauth-completion-page.ts";
 import { ConnectServer } from "./connect-server.ts";
 import { RuntimeTokenService } from "./storage/runtime-token-service.ts";
 
@@ -173,7 +174,9 @@ export async function createConnectApp(options: ConnectAppOptions): Promise<Conn
       saasOAuth,
       compressApiResponses: options.compressApiResponses,
       serveDocumentation: options.serveDocumentation,
-      oauthResultOrigins: options.oauthResultOrigins,
+      // Validated here, not only where the environment is read, so a host
+      // that passes the option directly gets the same refusal of `*`.
+      oauthResultOrigins: normalizeOAuthResultOrigins(options.oauthResultOrigins ?? []),
     }).createApp(),
     runtimeAuthConfigured:
       Boolean(options.runtimeToken) ||

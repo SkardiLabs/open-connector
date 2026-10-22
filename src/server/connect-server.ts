@@ -1382,7 +1382,10 @@ export class ConnectServer {
       // it cannot complete later, and give the popup a page that tells the
       // person what happened and, for an allowed opener, posts the result.
       const errorCode = oauthProviderErrorCode(providerError);
-      if (state) await this.options.oauthFlow.discardAuthorization(state);
+      // Only a refusal that ended a pending authorization names its state.
+      // A late duplicate callback for a state another callback already
+      // completed must not tell the opener that authorization failed.
+      const discarded = state ? await this.options.oauthFlow.discardAuthorization(state) : false;
       this.options.logger?.warn(
         {
           ...logContext,
@@ -1393,7 +1396,11 @@ export class ConnectServer {
         "oauth callback refused by provider",
       );
       return context.html(
-        renderOAuthRefusedPage({ code: errorCode, state, resultOrigins: this.options.oauthResultOrigins ?? [] }),
+        renderOAuthRefusedPage({
+          code: errorCode,
+          state: discarded ? state : undefined,
+          resultOrigins: this.options.oauthResultOrigins ?? [],
+        }),
       );
     }
     if (!state || !code) {

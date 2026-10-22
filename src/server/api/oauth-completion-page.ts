@@ -332,8 +332,17 @@ export const oauthResultMessageType = "skardi-oauth-result";
  * rejected, so the result can never be broadcast to an arbitrary opener.
  */
 export function parseOAuthResultOrigins(value: string | undefined): string[] {
+  return normalizeOAuthResultOrigins((value ?? "").split(","));
+}
+
+/**
+ * The same rules for origins given as a list, such as a host's
+ * `oauthResultOrigins` runtime option: blank entries are skipped, anything
+ * that is not an exact http(s) origin (including `*`) throws.
+ */
+export function normalizeOAuthResultOrigins(entries: readonly string[]): string[] {
   const origins: string[] = [];
-  for (const raw of (value ?? "").split(",")) {
+  for (const raw of entries) {
     const entry = raw.trim().replace(/\/+$/, "");
     if (!entry) continue;
     let origin: string | undefined;

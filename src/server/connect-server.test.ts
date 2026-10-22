@@ -1562,6 +1562,16 @@ describe("ConnectServer", () => {
     expect(html).toContain("window.opener.postMessage(result,origin)");
     expect(html).not.toMatch(/postMessage\([^)]*"\*"/);
 
+    // A duplicate refusal for a state no longer pending (here: already
+    // refused; equally, already completed by another callback) still gets the
+    // page, but claims nothing about that authorization to the opener.
+    const duplicate = await app.request(`/oauth/callback?error=access_denied&state=${state}`);
+    const duplicateHtml = await duplicate.text();
+    expect(duplicate.status, duplicateHtml).toBe(200);
+    expect(duplicateHtml).toContain("Authorization cancelled");
+    expect(duplicateHtml).not.toContain("postMessage");
+    expect(duplicateHtml).not.toContain(state);
+
     // A refused authorization can never be completed afterwards.
     const late = await app.request(`/oauth/callback?state=${state}&code=example-code`);
     expect(late.status).toBe(400);
