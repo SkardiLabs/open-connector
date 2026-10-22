@@ -369,7 +369,6 @@ export function createOpenApiDocument(
     }),
     "/api/oauth/configs/{service}": createOAuthConfigPath(),
     "/api/oauth/authorizations": createOAuthAuthorizationPath(),
-    "/api/oauth/authorizations/{state}": createOAuthAuthorizationStatusPath(),
     "/api/runtime-tokens": createRuntimeTokensPath(),
     "/api/runtime-tokens/{id}": createRuntimeTokenPath(),
     "/api/runtime-policy": createRuntimePolicyPath(),
@@ -1498,34 +1497,6 @@ function createOAuthAuthorizationPath(): Record<string, unknown> {
           ),
         ),
         400: jsonResponse({ $ref: "#/components/schemas/ErrorResponse" }),
-        404: jsonResponse({ $ref: "#/components/schemas/ErrorResponse" }),
-      },
-    },
-  };
-}
-
-function createOAuthAuthorizationStatusPath(): Record<string, unknown> {
-  return {
-    get: {
-      tags: ["OAuth"],
-      summary: "Read a pending provider OAuth authorization.",
-      description:
-        "Reports whether the browser is still at the provider (pending) or the provider's callback refused the authorization (rejected, with the provider's error such as access_denied). Not found once the authorization completed or expired.",
-      parameters: [{ name: "state", in: "path", required: true, schema: jsonSchema.string() }],
-      responses: {
-        200: jsonResponse(
-          jsonSchema.object(
-            {
-              state: jsonSchema.string(),
-              status: { type: "string", enum: ["pending", "rejected"] },
-              providerError: jsonSchema.string({ description: "The provider's OAuth error code when rejected." }),
-            },
-            {
-              required: ["state", "status"],
-              description: "Pending OAuth authorization status.",
-            },
-          ),
-        ),
         404: jsonResponse({ $ref: "#/components/schemas/ErrorResponse" }),
       },
     },

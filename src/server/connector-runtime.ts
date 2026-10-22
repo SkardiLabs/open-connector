@@ -87,6 +87,8 @@ export interface ConnectorRuntimeOptions {
   actionPolicy?: ActionPolicyConfig;
   /** Services, or `*`, whose connections may carry their own OAuth client instead of the configured one. */
   allowedCustomOAuth?: string[];
+  /** Exact origins a provider-refusal callback page may post its result to. Never `*`. */
+  oauthResultOrigins?: string[];
   transitFiles?: ConnectorTransitFileOptions;
   /** Maximum number of recent action run records to retain. */
   runLimit?: number;
@@ -224,6 +226,7 @@ async function openRuntime(options: ConnectorRuntimeOptions): Promise<ConnectorR
       verifyRuntimeJwt,
       actionPolicy: new ActionPolicyService(options.actionPolicy),
       allowedCustomOAuth: options.allowedCustomOAuth,
+      oauthResultOrigins: options.oauthResultOrigins,
       logger: options.logger,
       serveDocumentation: options.apiReference ?? false,
     });

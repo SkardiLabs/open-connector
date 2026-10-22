@@ -36,13 +36,6 @@ export class SqlOAuthStateStore implements IOAuthStateStore {
     ]);
   }
 
-  async get(state: string): Promise<OAuthAuthorizationState | undefined> {
-    const [[row]] = await this.transaction([
-      { sql: "select value from oauth_states where state = ?", values: [state] },
-    ]);
-    return row ? (JSON.parse(await this.codec.decode(row.value as string)) as OAuthAuthorizationState) : undefined;
-  }
-
   async take(state: string): Promise<OAuthAuthorizationState | undefined> {
     const [[row]] = await this.transaction([
       { sql: "delete from oauth_states where state = ? returning value", values: [state] },

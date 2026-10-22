@@ -323,14 +323,72 @@ function scriptJson(value: unknown): string {
   return JSON.stringify(value).replaceAll("<", "\\u003c");
 }
 
+/** The `type` of the message a refusal page posts to the window that opened it. */
+export const oauthResultMessageType = "skardi-oauth-result";
+
+/**
+ * Reads the origins a refusal page may post its result to: a comma-separated
+ * list of exact HTTP(S) origins. `*` and anything that is not an origin are
+ * rejected, so the result can never be broadcast to an arbitrary opener.
+ */
+export function parseOAuthResultOrigins(value: string | undefined): string[] {
+  const origins: string[] = [];
+  for (const raw of (value ?? "").split(",")) {
+    const entry = raw.trim().replace(/\/+$/, "");
+    if (!entry) continue;
+    let origin: string | undefined;
+    try {
+      const url = new URL(entry);
+      if (url.protocol === "http:" || url.protocol === "https:") origin = url.origin;
+    } catch {
+      origin = undefined;
+    }
+    if (origin !== entry) {
+      throw new Error(
+        `OAuth result origin "${entry}" must be an exact http(s) origin such as https://console.example.com.`,
+      );
+    }
+    if (!origins.includes(origin)) origins.push(origin);
+  }
+  return origins;
+}
+
+/** A provider error code safe to echo: short and code-shaped, else `provider_error`. */
+export function oauthProviderErrorCode(providerError: string): string {
+  return /^[A-Za-z0-9_.-]{1,64}$/.test(providerError) ? providerError : "provider_error";
+}
+
+export interface OAuthRefusedPageInput {
+  /** The provider's error code, already passed through `oauthProviderErrorCode`. */
+  code: string;
+  /** The OAuth state of the refused authorization, when the callback carried one. */
+  state?: string;
+  /** Origins allowed to receive the result; empty means the page posts nothing. */
+  resultOrigins: readonly string[];
+}
+
 /**
  * The page a provider's refusal lands on when the authorization has no return
- * address. It only tells the person what happened; the client that started
- * the authorization learns it from `GET /api/oauth/authorizations/:state`.
+ * address. When this window was opened by a page on an allowed origin, it
+ * posts `{ type: "skardi-oauth-result", status, code, state }` to that origin
+ * only, then closes; otherwise it just says what happened. Success is never
+ * reported this way: the opener learns it from its own server.
  */
-export function renderOAuthRefusedPage(cancelled: boolean): string {
+export function renderOAuthRefusedPage(input: OAuthRefusedPageInput): string {
+  const cancelled = input.code === "access_denied";
   const titleKey = cancelled ? "cancelledTitle" : "refusedTitle";
   const strings = oauthCompletionStrings.en;
+  const result = {
+    type: oauthResultMessageType,
+    status: cancelled ? "cancelled" : "error",
+    code: input.code,
+    state: input.state ?? null,
+  };
+  const codeLine = cancelled ? "" : `\n    <p><code>${input.code}</code></p>`;
+  const postScript =
+    input.resultOrigins.length > 0 && input.state
+      ? `if(window.opener){const result=${scriptJson(result)};for(const origin of ${scriptJson(input.resultOrigins)}){try{window.opener.postMessage(result,origin);}catch{}}window.close();}\n`
+      : "";
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -344,7 +402,7 @@ export function renderOAuthRefusedPage(cancelled: boolean): string {
   <div class="header">
     <span class="badge" data-t="refusedBadge">${strings.refusedBadge}</span>
     <h1 data-t="${titleKey}">${strings[titleKey]}</h1>
-    <p data-t="refusedBody">${strings.refusedBody}</p>
+    <p data-t="refusedBody">${strings.refusedBody}</p>${codeLine}
   </div>
   <div class="actions">
     <button class="button" type="button" data-t="closeButton">${strings.closeButton}</button>
@@ -352,7 +410,7 @@ export function renderOAuthRefusedPage(cancelled: boolean): string {
   </div>
 </main>
 <script>(()=>{
-const STR=${scriptJson(oauthCompletionStrings)};
+${postScript}const STR=${scriptJson(oauthCompletionStrings)};
 ${oauthCompletionLocaleScript}
 const t=STR[pick()]||STR.en;
 document.documentElement.lang=pick();

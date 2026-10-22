@@ -17,6 +17,7 @@ import { ProviderLoader } from "../providers/provider-loader.ts";
 import { executorModules } from "../providers/registry.cloudflare.generated.ts";
 import { SaasCleanupService } from "../saas/saas-cleanup-service.ts";
 import { isConsoleShellPath } from "./api/console-paths.ts";
+import { parseOAuthResultOrigins } from "./api/oauth-completion-page.ts";
 import { loadCatalogFromAssets } from "./cloudflare/catalog-assets.ts";
 import { readPositiveInteger, resolvePublicOrigin } from "./cloudflare/cloudflare-env.ts";
 import { createConnectApp } from "./connect-app.ts";
@@ -119,6 +120,7 @@ async function createCloudflareApp(env: CloudflareEnv, publicOrigin: string): Pr
       blockedTriggers: parseActionPolicyList(env.OOMOL_CONNECT_BLOCKED_TRIGGERS),
     }),
     allowedCustomOAuth: parseActionPolicyList(env.OOMOL_CONNECT_ALLOWED_CUSTOM_OAUTH),
+    oauthResultOrigins: parseOAuthResultOrigins(env.OOMOL_CONNECT_OAUTH_RESULT_ORIGINS),
     logger: workerLogger,
     computeRuntimeAuthConfigured: false,
     // Cloudflare compresses on egress itself: Response defaults to
@@ -179,6 +181,7 @@ function createCacheKey(env: CloudflareEnv, publicOrigin: string): string {
     blockedTriggers: env.OOMOL_CONNECT_BLOCKED_TRIGGERS ?? "",
     blockedProxies: env.OOMOL_CONNECT_BLOCKED_PROXIES ?? "",
     allowedCustomOAuth: env.OOMOL_CONNECT_ALLOWED_CUSTOM_OAUTH ?? "",
+    oauthResultOrigins: env.OOMOL_CONNECT_OAUTH_RESULT_ORIGINS ?? "",
     transitFileTtlSeconds: env.OOMOL_CONNECT_TRANSIT_FILE_TTL_SECONDS ?? "",
     transitFileMaxBytes: env.OOMOL_CONNECT_TRANSIT_FILE_MAX_BYTES ?? "",
     runLimit: env.OOMOL_CONNECT_RUN_LIMIT ?? "",

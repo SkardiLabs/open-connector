@@ -1513,24 +1513,26 @@ describe("ConnectServer", () => {
     }
   });
 
-  it("surfaces provider errors returned on the OAuth callback", async () => {
+  it("shows a provider error on the OAuth callback as a page, not JSON", async () => {
     const app = createTestServer([apiKeyProvider], { auth: { adminToken: "local-token" } }).createApp();
 
     const response = await app.request(
       "/oauth/callback?error=invalid_scope&error_description=The+requested+scope+is+invalid.&state=example-state",
     );
+    const html = await response.text();
 
-    expect(response.status).toBe(400);
-    await expect(response.json()).resolves.toEqual({
-      error: {
-        code: "oauth_provider_error",
-        message: 'OAuth provider returned error "invalid_scope": The requested scope is invalid.',
-      },
-    });
+    expect(response.status, html).toBe(200);
+    expect(response.headers.get("content-type")).toContain("text/html");
+    expect(html).toContain("Authorization not completed");
+    expect(html).toContain("<code>invalid_scope</code>");
+    // No result origin is configured, so the page posts nothing to its opener.
+    expect(html).not.toContain("postMessage");
   });
 
-  it("records a provider refusal so the client that started the authorization can read it", async () => {
-    const app = createTestServer([oauthProvider]).createApp();
+  it("posts a cancelled authorization to the configured opener origin only, and never completes it later", async () => {
+    const app = createTestServer([oauthProvider], {
+      oauthResultOrigins: ["https://console.example.com"],
+    }).createApp();
     const config = await app.request("/api/oauth/configs/oauth_example", {
       method: "PUT",
       headers: { "content-type": "application/json" },
@@ -1548,36 +1550,22 @@ describe("ConnectServer", () => {
     });
     const { state } = (await authorization.json()) as { state: string };
 
-    const waiting = await app.request(`/api/oauth/authorizations/${state}`);
-    expect(waiting.status).toBe(200);
-    await expect(waiting.json()).resolves.toEqual({ state, status: "pending" });
-
     const callback = await app.request(`/oauth/callback?error=access_denied&state=${state}`);
-    const callbackText = await callback.text();
-    expect(callback.status, callbackText).toBe(200);
-    expect(callback.headers.get("content-type")).toContain("text/html");
-    expect(callbackText).toContain("Authorization cancelled");
-    expect(callbackText).toContain("Close this window to return where you started.");
-    expect(callbackText).toContain("window.close()");
-    expect(callbackText).not.toContain("oauth_provider_error");
+    const html = await callback.text();
 
-    const refused = await app.request(`/api/oauth/authorizations/${state}`);
-    expect(refused.status).toBe(200);
-    await expect(refused.json()).resolves.toEqual({ state, status: "rejected", providerError: "access_denied" });
+    expect(callback.status, html).toBe(200);
+    expect(callback.headers.get("content-type")).toContain("text/html");
+    expect(html).toContain("Authorization cancelled");
+    const result = JSON.stringify({ type: "skardi-oauth-result", status: "cancelled", code: "access_denied", state });
+    expect(html).toContain(`const result=${result}`);
+    expect(html).toContain('for(const origin of ["https://console.example.com"])');
+    expect(html).toContain("window.opener.postMessage(result,origin)");
+    expect(html).not.toMatch(/postMessage\([^)]*"\*"/);
 
     // A refused authorization can never be completed afterwards.
     const late = await app.request(`/oauth/callback?state=${state}&code=example-code`);
     expect(late.status).toBe(400);
     await expect(late.json()).resolves.toMatchObject({ error: { code: "invalid_oauth_state" } });
-  });
-
-  it("reports an authorization that is not pending as not found", async () => {
-    const app = createTestServer([apiKeyProvider]).createApp();
-
-    const response = await app.request("/api/oauth/authorizations/missing-state");
-
-    expect(response.status).toBe(404);
-    await expect(response.json()).resolves.toMatchObject({ error: { code: "oauth_state_not_found" } });
   });
 
   it("accepts the shared OAuth callback route without a service path segment", async () => {
@@ -3948,6 +3936,7 @@ interface CreateTestServerOptions {
   uploadTransitFile?: (request: Request) => Promise<TransitFileUpload>;
   secretCodec?: ISecretCodec;
   allowedCustomOAuth?: string[];
+  oauthResultOrigins?: string[];
 }
 
 function createTestServer(providers: ProviderDefinition[], options: CreateTestServerOptions = {}): ConnectServer {
@@ -4026,6 +4015,7 @@ function createTestServer(providers: ProviderDefinition[], options: CreateTestSe
     actionPolicy: options.actionPolicy,
     actionSearch: options.actionSearch,
     logger: options.logger,
+    oauthResultOrigins: options.oauthResultOrigins,
   });
 }
 
@@ -4310,10 +4300,6 @@ class MemoryOAuthStateStore implements IOAuthStateStore {
 
   async set(state: OAuthAuthorizationState): Promise<void> {
     this.states.set(state.state, state);
-  }
-
-  async get(state: string): Promise<OAuthAuthorizationState | undefined> {
-    return this.states.get(state);
   }
 
   async take(state: string): Promise<OAuthAuthorizationState | undefined> {

@@ -54,7 +54,11 @@ import { clearLocalAuthCookie, createLocalAuthMiddleware, readLocalAuthSession, 
 import { getResponseCachePolicy } from "./api/cache-policy.ts";
 import { createConnectionRoutes } from "./api/connection-routes.ts";
 import { HttpRequestError, internalError, jsonError, notFound, readJsonBody } from "./api/http-utils.ts";
-import { renderOAuthCompletionPage, renderOAuthRefusedPage } from "./api/oauth-completion-page.ts";
+import {
+  oauthProviderErrorCode,
+  renderOAuthCompletionPage,
+  renderOAuthRefusedPage,
+} from "./api/oauth-completion-page.ts";
 import { policyRequestMaxBytes, readRuntimePolicyRules, readTokenPolicy } from "./api/policy-input.ts";
 import { serializeRuntimeTriggerPermissions } from "./api/runtime-api.ts";
 import {
@@ -153,6 +157,8 @@ export interface IConnectServerOptions {
   saasProject?: SaasProjectService;
   saas?: SaasExecutionService;
   saasOAuth?: SaasOAuthService;
+  /** Origins a provider-refusal page may post its result to (`OOMOL_CONNECT_OAUTH_RESULT_ORIGINS`). */
+  oauthResultOrigins?: readonly string[];
 }
 
 /**
@@ -409,9 +415,6 @@ export class ConnectServer {
       }
     });
     app.post("/api/oauth/authorizations", (context) => this.createOAuthAuthorization(context));
-    app.get("/api/oauth/authorizations/:state", (context) =>
-      this.getOAuthAuthorization(context, context.req.param("state")),
-    );
     app.get("/oauth/callback", (context) => this.completeOAuth(context));
     app.post("/mcp", (context) => this.handleMcp(context));
     app.get("/mcp", (context) => this.rejectMcpMethod(context));
@@ -1359,14 +1362,6 @@ export class ConnectServer {
     return this.writeOAuthResult(context, this.options.oauthClientConfigs.deleteConfig(service));
   }
 
-  private async getOAuthAuthorization(context: Context, state: string): Promise<Response> {
-    const authorization = await this.options.oauthFlow.getAuthorization(state);
-    if (!authorization) {
-      return jsonError(context, 404, "oauth_state_not_found", "OAuth authorization is not pending.");
-    }
-    return context.json(authorization);
-  }
-
   private async completeOAuth(context: Context): Promise<Response> {
     const state = context.req.query("state");
     const code = context.req.query("code");
@@ -1383,28 +1378,22 @@ export class ConnectServer {
         : undefined;
       if (returnUri) return context.redirect(returnUri);
       // A runtime authorization (`POST /api/oauth/authorizations`) has no
-      // return address: its client watches for the outcome from the tab it
-      // started in. Record the refusal for that client to read, and give the
-      // person on this tab a page that says what happened instead of JSON.
-      if (state && (await this.options.oauthFlow.recordAuthorizationError(state, providerError))) {
-        this.options.logger?.info({ ...logContext, providerError }, "oauth callback refused by provider");
-        return context.html(renderOAuthRefusedPage(providerError === "access_denied"));
-      }
-      const providerErrorDescription = context.req.query("error_description");
+      // return address: it was started from a popup. End the authorization so
+      // it cannot complete later, and give the popup a page that tells the
+      // person what happened and, for an allowed opener, posts the result.
+      const errorCode = oauthProviderErrorCode(providerError);
+      if (state) await this.options.oauthFlow.discardAuthorization(state);
       this.options.logger?.warn(
         {
           ...logContext,
           errorCode: "oauth_provider_error",
-          providerError,
-          providerErrorDescription,
+          providerError: errorCode,
+          providerErrorDescription: context.req.query("error_description"),
         },
-        "oauth callback failed",
+        "oauth callback refused by provider",
       );
-      return jsonError(
-        context,
-        400,
-        "oauth_provider_error",
-        `OAuth provider returned error "${providerError}"${providerErrorDescription ? `: ${providerErrorDescription}` : "."}`,
+      return context.html(
+        renderOAuthRefusedPage({ code: errorCode, state, resultOrigins: this.options.oauthResultOrigins ?? [] }),
       );
     }
     if (!state || !code) {
