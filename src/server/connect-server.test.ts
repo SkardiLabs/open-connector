@@ -1529,6 +1529,57 @@ describe("ConnectServer", () => {
     });
   });
 
+  it("records a provider refusal so the client that started the authorization can read it", async () => {
+    const app = createTestServer([oauthProvider]).createApp();
+    const config = await app.request("/api/oauth/configs/oauth_example", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        clientId: "client-id",
+        clientSecret: "client-secret",
+        secretExtra: { appBearerToken: "app-token" },
+      }),
+    });
+    expect(config.status).toBe(200);
+    const authorization = await app.request("/api/oauth/authorizations", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ service: "oauth_example" }),
+    });
+    const { state } = (await authorization.json()) as { state: string };
+
+    const waiting = await app.request(`/api/oauth/authorizations/${state}`);
+    expect(waiting.status).toBe(200);
+    await expect(waiting.json()).resolves.toEqual({ state, status: "pending" });
+
+    const callback = await app.request(`/oauth/callback?error=access_denied&state=${state}`);
+    const callbackText = await callback.text();
+    expect(callback.status, callbackText).toBe(200);
+    expect(callback.headers.get("content-type")).toContain("text/html");
+    expect(callbackText).toContain("Authorization cancelled");
+    expect(callbackText).toContain("Close this window to return where you started.");
+    expect(callbackText).toContain("window.close()");
+    expect(callbackText).not.toContain("oauth_provider_error");
+
+    const refused = await app.request(`/api/oauth/authorizations/${state}`);
+    expect(refused.status).toBe(200);
+    await expect(refused.json()).resolves.toEqual({ state, status: "rejected", providerError: "access_denied" });
+
+    // A refused authorization can never be completed afterwards.
+    const late = await app.request(`/oauth/callback?state=${state}&code=example-code`);
+    expect(late.status).toBe(400);
+    await expect(late.json()).resolves.toMatchObject({ error: { code: "invalid_oauth_state" } });
+  });
+
+  it("reports an authorization that is not pending as not found", async () => {
+    const app = createTestServer([apiKeyProvider]).createApp();
+
+    const response = await app.request("/api/oauth/authorizations/missing-state");
+
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toMatchObject({ error: { code: "oauth_state_not_found" } });
+  });
+
   it("accepts the shared OAuth callback route without a service path segment", async () => {
     const app = createTestServer([apiKeyProvider], { auth: { adminToken: "local-token" } }).createApp();
 
@@ -4259,6 +4310,10 @@ class MemoryOAuthStateStore implements IOAuthStateStore {
 
   async set(state: OAuthAuthorizationState): Promise<void> {
     this.states.set(state.state, state);
+  }
+
+  async get(state: string): Promise<OAuthAuthorizationState | undefined> {
+    return this.states.get(state);
   }
 
   async take(state: string): Promise<OAuthAuthorizationState | undefined> {

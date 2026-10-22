@@ -64,6 +64,20 @@ export interface OAuthAuthorizationState {
    */
   redirectUri?: string;
   clientConfig?: OAuthClientConfig;
+  /**
+   * The provider's `error` from a callback that ended this authorization
+   * without a grant (`access_denied` when the user cancelled). The state stays
+   * readable until it ages out, so the client that started the authorization
+   * can tell a refusal from a wait; a state carrying it is never completed.
+   */
+  providerError?: string;
+}
+
+/** What `GET /api/oauth/authorizations/:state` reports about a pending authorization. */
+export interface OAuthAuthorizationStatus {
+  state: string;
+  status: "pending" | "rejected";
+  providerError?: string;
 }
 
 export interface OAuthFlowServiceOptions {
@@ -85,6 +99,8 @@ export interface IOAuthStateStore {
   /** Deletes states whose creation timestamp is earlier than the cutoff. */
   deleteCreatedBefore(cutoff: string): Promise<void>;
   set(state: OAuthAuthorizationState): Promise<void>;
+  /** Reads a state without consuming it. */
+  get(state: string): Promise<OAuthAuthorizationState | undefined>;
   take(state: string): Promise<OAuthAuthorizationState | undefined>;
 }
 
@@ -199,6 +215,30 @@ export class OAuthFlowService {
     );
   }
 
+  /**
+   * Records the provider's refusal on a pending authorization state, so
+   * `getAuthorization` can report it. Returns false when no such state is
+   * pending: unknown, already used, or expired.
+   */
+  async recordAuthorizationError(state: string, providerError: string): Promise<boolean> {
+    const pending = await this.states.take(state);
+    if (!pending || isExpiredOAuthState(pending, this.stateMaxAgeMs)) return false;
+    await this.states.set({ ...pending, providerError: pending.providerError ?? providerError });
+    return true;
+  }
+
+  /**
+   * Reports whether a pending authorization is still waiting for the browser
+   * or was refused by the provider. Undefined once it is completed, unknown,
+   * or expired.
+   */
+  async getAuthorization(state: string): Promise<OAuthAuthorizationStatus | undefined> {
+    const pending = await this.states.get(state);
+    if (!pending || isExpiredOAuthState(pending, this.stateMaxAgeMs)) return undefined;
+    if (pending.providerError) return { state, status: "rejected", providerError: pending.providerError };
+    return { state, status: "pending" };
+  }
+
   private async prepareAuthorization(
     input: OAuthAuthorizationStartInput,
     requestConfig?: OAuthClientConfig,
@@ -278,7 +318,7 @@ export class OAuthFlowService {
     if (!pending || typeof pending.retirementGeneration !== "string") {
       throw new OAuthFlowError("invalid_oauth_state", "OAuth state is missing or expired.");
     }
-    if (!request && isExpiredOAuthState(pending, this.stateMaxAgeMs)) {
+    if (!request && (isExpiredOAuthState(pending, this.stateMaxAgeMs) || pending.providerError)) {
       throw new OAuthFlowError("invalid_oauth_state", "OAuth state is missing or expired.");
     }
 

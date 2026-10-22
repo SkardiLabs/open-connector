@@ -223,6 +223,22 @@ describe("SqliteRuntimeDatabase", () => {
     database.close();
   });
 
+  it("reads an OAuth state without consuming it", async () => {
+    const database = new SqliteRuntimeDatabase(await createDatabasePath());
+    await database.oauthStateStore.set({
+      service: "gmail",
+      retirementGeneration: await database.connectionStore.getRetirementGeneration("gmail", "default"),
+      state: "refused",
+      createdAt: "2026-06-30T00:00:00.000Z",
+      providerError: "access_denied",
+    });
+
+    await expect(database.oauthStateStore.get("refused")).resolves.toMatchObject({ providerError: "access_denied" });
+    await expect(database.oauthStateStore.take("refused")).resolves.toMatchObject({ state: "refused" });
+    await expect(database.oauthStateStore.get("refused")).resolves.toBeUndefined();
+    database.close();
+  });
+
   it("preserves connection identity and rejects stale credential revisions", async () => {
     const database = new SqliteRuntimeDatabase(await createDatabasePath());
     const credential = {

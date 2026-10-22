@@ -54,7 +54,7 @@ import { clearLocalAuthCookie, createLocalAuthMiddleware, readLocalAuthSession, 
 import { getResponseCachePolicy } from "./api/cache-policy.ts";
 import { createConnectionRoutes } from "./api/connection-routes.ts";
 import { HttpRequestError, internalError, jsonError, notFound, readJsonBody } from "./api/http-utils.ts";
-import { renderOAuthCompletionPage } from "./api/oauth-completion-page.ts";
+import { renderOAuthCompletionPage, renderOAuthRefusedPage } from "./api/oauth-completion-page.ts";
 import { policyRequestMaxBytes, readRuntimePolicyRules, readTokenPolicy } from "./api/policy-input.ts";
 import { serializeRuntimeTriggerPermissions } from "./api/runtime-api.ts";
 import {
@@ -409,6 +409,9 @@ export class ConnectServer {
       }
     });
     app.post("/api/oauth/authorizations", (context) => this.createOAuthAuthorization(context));
+    app.get("/api/oauth/authorizations/:state", (context) =>
+      this.getOAuthAuthorization(context, context.req.param("state")),
+    );
     app.get("/oauth/callback", (context) => this.completeOAuth(context));
     app.post("/mcp", (context) => this.handleMcp(context));
     app.get("/mcp", (context) => this.rejectMcpMethod(context));
@@ -1356,6 +1359,14 @@ export class ConnectServer {
     return this.writeOAuthResult(context, this.options.oauthClientConfigs.deleteConfig(service));
   }
 
+  private async getOAuthAuthorization(context: Context, state: string): Promise<Response> {
+    const authorization = await this.options.oauthFlow.getAuthorization(state);
+    if (!authorization) {
+      return jsonError(context, 404, "oauth_state_not_found", "OAuth authorization is not pending.");
+    }
+    return context.json(authorization);
+  }
+
   private async completeOAuth(context: Context): Promise<Response> {
     const state = context.req.query("state");
     const code = context.req.query("code");
@@ -1371,6 +1382,14 @@ export class ConnectServer {
         ? await this.options.oauthFlow.rejectAuthorization(state, providerError === "access_denied")
         : undefined;
       if (returnUri) return context.redirect(returnUri);
+      // A runtime authorization (`POST /api/oauth/authorizations`) has no
+      // return address: its client watches for the outcome from the tab it
+      // started in. Record the refusal for that client to read, and give the
+      // person on this tab a page that says what happened instead of JSON.
+      if (state && (await this.options.oauthFlow.recordAuthorizationError(state, providerError))) {
+        this.options.logger?.info({ ...logContext, providerError }, "oauth callback refused by provider");
+        return context.html(renderOAuthRefusedPage(providerError === "access_denied"));
+      }
       const providerErrorDescription = context.req.query("error_description");
       this.options.logger?.warn(
         {
