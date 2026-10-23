@@ -70,6 +70,19 @@ describe("renderOAuthRefusedPage", () => {
     expect(html).not.toContain('"*"');
     expect(html).toContain("let remaining=0;");
   });
+
+  it("leaves closing to the countdown after posting the result", () => {
+    const html = renderOAuthRefusedPage({
+      code: "access_denied",
+      state: "s1",
+      resultOrigins: ["https://a.example.com"],
+      closeDelaySeconds: 7,
+    });
+
+    const post = html.slice(html.indexOf("window.opener.postMessage"));
+    expect(post.slice(0, post.indexOf("\n"))).not.toContain("window.close()");
+    expect(html).toContain("let remaining=7;");
+  });
 });
 
 describe("parseOAuthResultOrigins", () => {

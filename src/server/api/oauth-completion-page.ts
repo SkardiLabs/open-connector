@@ -388,8 +388,8 @@ export interface OAuthRefusedPageInput {
 /**
  * The page a provider's refusal lands on when the authorization has no return
  * address. When this window was opened by a page on an allowed origin, it
- * posts `{ type: "oauth.refused", status, code, state }` to that origin only,
- * then closes; otherwise it just says what happened. Success is never
+ * posts `{ type: "oauth.refused", status, code, state }` to that origin only;
+ * either way the shared countdown closes it after `closeDelaySeconds`. Success is never
  * reported this way: the opener learns it from its own server.
  */
 export function renderOAuthRefusedPage(input: OAuthRefusedPageInput): string {
@@ -406,7 +406,7 @@ export function renderOAuthRefusedPage(input: OAuthRefusedPageInput): string {
   const codeLine = cancelled ? "" : `\n    <p><code>${input.code}</code></p>`;
   const postScript =
     input.resultOrigins.length > 0 && input.state
-      ? `if(window.opener){const result=${scriptJson(result)};for(const origin of ${scriptJson(input.resultOrigins)}){try{window.opener.postMessage(result,origin);}catch{}}window.close();}\n`
+      ? `if(window.opener){const result=${scriptJson(result)};for(const origin of ${scriptJson(input.resultOrigins)}){try{window.opener.postMessage(result,origin);}catch{}}}\n`
       : "";
   return `<!doctype html>
 <html lang="en">
