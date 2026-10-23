@@ -57,6 +57,20 @@ import { gmailMessageReceived } from "./trigger-on-message-received.ts";
 const service = "gmail";
 const gmailApiBaseUrl = "https://gmail.googleapis.com/gmail/v1";
 const detailHydrationBatchSize = 10;
+// Hydration fans out one `messages.get` (5 quota units) per listed id, and Gmail's per-user budget
+// is a moving average of 250 units/s (about 50 gets/s), so ten concurrent gets at typical latency
+// trip it. The retry below keeps hydrated rows and paces the rest instead of discarding the page.
+// Six attempts let the backoff climb 1, 2, 4, 8, 16 s (about 31 s of waiting per message at most),
+// long enough for the moving average to drain, without retrying one message forever.
+const hydrationMaxAttempts = 6;
+const hydrationBaseBackoffMs = 1_000;
+// Total time one action may spend waiting out rate limits. Skardi's ETL client gives an action
+// 300 s, so 120 s of waiting plus the hydration requests themselves stays well inside it and the
+// action still fails as rate_limited (which the caller paces) rather than as a client timeout.
+const hydrationRetryBudgetMs = 120_000;
+// Per-user limits that clear within seconds. dailyLimitExceeded and quotaExceeded stay
+// rate_limited but are not retried here: they do not recover inside one action.
+const gmailRetryableRateLimitReasons = new Set(["rateLimitExceeded", "userRateLimitExceeded"]);
 // Attachments may reach Gmail's 25 MB cap, and the base64 JSON envelope is a third larger again;
 // the default 30 s request budget covers fetch, decode, and disk write, so give this transfer longer.
 const attachmentDownloadTimeoutMs = 120_000;
@@ -119,11 +133,11 @@ export const gmailActionHandlers: ProviderActionHandlers<typeof service, ActionH
       })),
     };
   },
-  list_threads(input, { userId, accessToken, fetcher }) {
-    return listThreads(input, userId, accessToken, fetcher);
+  list_threads(input, { userId, accessToken, fetcher, signal }) {
+    return listThreads(input, userId, accessToken, fetcher, signal);
   },
-  fetch_emails(input, { userId, accessToken, fetcher }) {
-    return fetchEmails(input, userId, accessToken, fetcher);
+  fetch_emails(input, { userId, accessToken, fetcher, signal }) {
+    return fetchEmails(input, userId, accessToken, fetcher, signal);
   },
   async get_message(input, { userId, accessToken, fetcher }) {
     const message = await getMessageResource(userId, normalizeMessageId(input.messageId), accessToken, fetcher, "full");
@@ -162,8 +176,8 @@ export const gmailActionHandlers: ProviderActionHandlers<typeof service, ActionH
   create_email_draft(input, context) {
     return createEmailDraft(input, context);
   },
-  list_drafts(input, { userId, accessToken, fetcher }) {
-    return listDrafts(input, userId, accessToken, fetcher);
+  list_drafts(input, { userId, accessToken, fetcher, signal }) {
+    return listDrafts(input, userId, accessToken, fetcher, signal);
   },
   get_draft(input, { userId, accessToken, fetcher }) {
     return getDraft(input, userId, accessToken, fetcher);
@@ -307,7 +321,13 @@ export const credentialValidators: CredentialValidators = {
   customCredential: googleServiceAccountValidator(service, gmailOAuthScopes),
 };
 
-async function fetchEmails(input: Record<string, unknown>, userId: string, accessToken: string, fetcher: typeof fetch) {
+async function fetchEmails(
+  input: Record<string, unknown>,
+  userId: string,
+  accessToken: string,
+  fetcher: typeof fetch,
+  signal?: AbortSignal,
+) {
   const detail = trimmedString(input.detail) || "summary";
   const url = new URL(gmailUserUrl(userId, "messages"));
   const query = trimmedString(input.query);
@@ -346,8 +366,10 @@ async function fetchEmails(input: Record<string, unknown>, userId: string, acces
 
   const includeFullMessage = detail === "full";
   const format = includeFullMessage ? "full" : "metadata";
-  const hydrated = await hydrateInBatches(messages, (message) =>
-    getMessageResource(userId, message.id, accessToken, fetcher, format),
+  const hydrated = await hydrateInBatches(
+    messages,
+    (message) => getMessageResource(userId, message.id, accessToken, fetcher, format),
+    signal,
   );
 
   return {
@@ -386,7 +408,13 @@ async function fetchMessagesByThreadId(
   };
 }
 
-async function listThreads(input: Record<string, unknown>, userId: string, accessToken: string, fetcher: typeof fetch) {
+async function listThreads(
+  input: Record<string, unknown>,
+  userId: string,
+  accessToken: string,
+  fetcher: typeof fetch,
+  signal?: AbortSignal,
+) {
   const url = new URL(gmailUserUrl(userId, "threads"));
   const query = trimmedString(input.query);
   if (query) {
@@ -407,8 +435,10 @@ async function listThreads(input: Record<string, unknown>, userId: string, acces
   const threads = payload.threads ?? [];
 
   if (input.verbose === true) {
-    const hydrated = await hydrateInBatches(threads, (thread) =>
-      getThreadResource(userId, thread.id, accessToken, fetcher, "full"),
+    const hydrated = await hydrateInBatches(
+      threads,
+      (thread) => getThreadResource(userId, thread.id, accessToken, fetcher, "full"),
+      signal,
     );
     return {
       threads: hydrated.map((thread) => ({
@@ -604,7 +634,13 @@ function latestReplyMessage(thread: GmailThreadResource): GmailMessageResource {
   return latest;
 }
 
-async function listDrafts(input: Record<string, unknown>, userId: string, accessToken: string, fetcher: typeof fetch) {
+async function listDrafts(
+  input: Record<string, unknown>,
+  userId: string,
+  accessToken: string,
+  fetcher: typeof fetch,
+  signal?: AbortSignal,
+) {
   const url = new URL(gmailUserUrl(userId, "drafts"));
   if (input.pageToken != null) {
     url.searchParams.set("pageToken", String(input.pageToken));
@@ -620,8 +656,10 @@ async function listDrafts(input: Record<string, unknown>, userId: string, access
   const drafts = payload.drafts ?? [];
 
   if (input.verbose === true) {
-    const hydrated = await hydrateInBatches(drafts, (draft) =>
-      getDraftResource(userId, draft.id, accessToken, fetcher, "full"),
+    const hydrated = await hydrateInBatches(
+      drafts,
+      (draft) => getDraftResource(userId, draft.id, accessToken, fetcher, "full"),
+      signal,
     );
     return {
       drafts: hydrated.map((draft) => ({
@@ -1148,17 +1186,98 @@ function normalizeThread(thread: GmailThreadResource) {
   };
 }
 
+/**
+ * Hydrate every item, in order, or fail the whole call: a caller advances its page cursor on
+ * success, so a partial page must never look complete.
+ *
+ * Items run in batches of up to `detailHydrationBatchSize`. A per-user rate limit on one item
+ * keeps every row already hydrated and requeues only the limited items; the batch width halves
+ * (down to 1) and the next batch waits out `Retry-After` or an exponential, jittered backoff.
+ * Each clean batch widens the next one by a single item again. When an item runs out of
+ * attempts, or the next wait would overrun the action's retry budget, the rate-limit error
+ * with the longest `Retry-After` is thrown unchanged, so the action still reports `rate_limited`.
+ * Any other error rejects immediately, exactly like the plain batch it replaces.
+ */
 async function hydrateInBatches<T, TResult>(
   items: T[],
   hydrate: (item: T) => Promise<TResult>,
-  batchSize = detailHydrationBatchSize,
-) {
-  const hydrated: TResult[] = [];
-  for (let index = 0; index < items.length; index += batchSize) {
-    const batch = items.slice(index, index + batchSize);
-    hydrated.push(...(await Promise.all(batch.map((item) => hydrate(item)))));
+  signal?: AbortSignal,
+): Promise<TResult[]> {
+  const hydrated = new Array<TResult>(items.length);
+  const attempts = new Array<number>(items.length).fill(0);
+  const deadline = Date.now() + hydrationRetryBudgetMs;
+  let pending = items.map((_item, index) => index);
+  let width = detailHydrationBatchSize;
+  while (pending.length > 0) {
+    const batch = pending.slice(0, width);
+    const outcomes = await Promise.all(
+      batch.map(async (index) => {
+        attempts[index]! += 1;
+        try {
+          hydrated[index] = await hydrate(items[index]!);
+          return undefined;
+        } catch (error) {
+          if (isRetryableGmailRateLimit(error)) return error;
+          throw error;
+        }
+      }),
+    );
+    const limited = batch.filter((_index, position) => outcomes[position] !== undefined);
+    pending = [...limited, ...pending.slice(batch.length)];
+    if (limited.length === 0) {
+      width = Math.min(detailHydrationBatchSize, width + 1);
+      continue;
+    }
+
+    // Surface the error carrying the longest Retry-After so the caller can pace the connection.
+    const pacingError = outcomes
+      .filter((error) => error !== undefined)
+      .reduce((longest, error) => (gmailRetryAfterMs(error) > gmailRetryAfterMs(longest) ? error : longest));
+    const attempt = Math.max(...limited.map((index) => attempts[index]!));
+    if (attempt >= hydrationMaxAttempts) throw pacingError;
+    const delayMs = hydrationRetryDelayMs(attempt, gmailRetryAfterMs(pacingError));
+    if (Date.now() + delayMs > deadline) throw pacingError;
+    width = Math.max(1, Math.floor(width / 2));
+    await sleepFor(delayMs, signal);
   }
   return hydrated;
+}
+
+function isRetryableGmailRateLimit(error: unknown): error is GmailRequestError {
+  return (
+    error instanceof GmailRequestError &&
+    (error.status === 429 ||
+      (error.status === 403 && error.reasons.some((reason) => gmailRetryableRateLimitReasons.has(reason))))
+  );
+}
+
+function gmailRetryAfterMs(error: GmailRequestError) {
+  return (optionalNumberLike(optionalRecord(error.details)?.retryAfterSeconds) ?? 0) * 1_000;
+}
+
+/** Honour the upstream `Retry-After` when present, else equal-jitter exponential backoff. */
+function hydrationRetryDelayMs(attempt: number, retryAfterMs: number) {
+  if (retryAfterMs > 0) return retryAfterMs;
+  const backoffMs = hydrationBaseBackoffMs * 2 ** (attempt - 1);
+  return backoffMs / 2 + Math.random() * (backoffMs / 2);
+}
+
+function sleepFor(delayMs: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal!.reason);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, delayMs);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 function buildLabelPayload(input: Record<string, unknown>) {
@@ -1274,6 +1393,16 @@ const gmailQuotaReasons = new Set([
   "quotaExceeded",
 ]);
 
+/** A Gmail API failure that also keeps the upstream `error.errors[].reason` values for retry decisions. */
+class GmailRequestError extends ProviderRequestError {
+  readonly reasons: readonly string[];
+
+  constructor(status: number, message: string, details: unknown, code: string | undefined, reasons: string[]) {
+    super(status, message, details, code);
+    this.reasons = reasons;
+  }
+}
+
 async function readGmailError(response: Response): Promise<ProviderRequestError> {
   const text = await readProviderErrorTextBody(response, "gmail error response");
   let error: Record<string, unknown> | undefined;
@@ -1282,16 +1411,14 @@ async function readGmailError(response: Response): Promise<ProviderRequestError>
   } catch {
     // A malformed response must not expose its raw body or change status classification.
   }
-  const rateLimited =
-    response.status === 403 &&
-    looseArray(error?.errors).some((entry) =>
-      gmailQuotaReasons.has(optionalString(optionalRecord(entry)?.reason) ?? ""),
-    );
-  return new ProviderRequestError(
+  const reasons = looseArray(error?.errors).flatMap((entry) => optionalString(optionalRecord(entry)?.reason) ?? []);
+  const rateLimited = response.status === 403 && reasons.some((reason) => gmailQuotaReasons.has(reason));
+  return new GmailRequestError(
     response.status,
     optionalString(error?.message) ?? `gmail request failed with ${response.status}`,
     withRetryAfterSeconds(response),
     rateLimited ? "rate_limited" : undefined,
+    reasons,
   );
 }
 
