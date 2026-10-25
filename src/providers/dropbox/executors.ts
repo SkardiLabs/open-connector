@@ -10,6 +10,7 @@ import type { OAuthProviderContext } from "../provider-runtime.ts";
 import { Buffer } from "node:buffer";
 import {
   compactObject,
+  objectArray,
   optionalBoolean,
   optionalNumber,
   optionalRecord as asOptionalObject,
@@ -24,6 +25,7 @@ import {
   normalizeProviderProxyEndpoint,
   normalizeProviderProxyHeaders,
   ProviderRequestError,
+  providerResponseError,
   providerUserAgent,
   readProviderProxyResponse,
   requireOAuthCredential,
@@ -68,6 +70,12 @@ export const dropboxActionHandlers: ProviderActionHandlers<"dropbox", ActionHand
   },
   list_folder_continue(input, { accessToken, fetcher }) {
     return listFolderContinue(input, accessToken, fetcher);
+  },
+  list_file_members(input, { accessToken, fetcher }) {
+    return listFileMembers(input, accessToken, fetcher);
+  },
+  list_file_members_continue(input, { accessToken, fetcher }) {
+    return listFileMembersContinue(input, accessToken, fetcher);
   },
   get_metadata(input, { accessToken, fetcher }) {
     return getMetadata(input, accessToken, fetcher);
@@ -250,6 +258,38 @@ function normalizeListFolderResult(payload: Record<string, unknown>) {
     entries: readObjectArray(payload.entries).map(mapDropboxMetadata),
     cursor: requireString(payload.cursor, "dropbox cursor"),
     hasMore: optionalBoolean(payload.has_more) ?? false,
+  };
+}
+
+async function listFileMembers(input: Record<string, unknown>, accessToken: string, fetcher: typeof fetch) {
+  const payload = await dropboxRpcRequest("sharing/list_file_members", {
+    accessToken,
+    fetcher,
+    body: compactObject({
+      file: requireString(input.file, "dropbox file"),
+      include_inherited: optionalBoolean(input.includeInherited),
+      limit: optionalNumber(input.limit),
+    }),
+  });
+  return normalizeFileMembers(payload);
+}
+
+async function listFileMembersContinue(input: Record<string, unknown>, accessToken: string, fetcher: typeof fetch) {
+  const payload = await dropboxRpcRequest("sharing/list_file_members/continue", {
+    accessToken,
+    fetcher,
+    body: { cursor: requireString(input.cursor, "dropbox file members cursor") },
+  });
+  return normalizeFileMembers(payload);
+}
+
+function normalizeFileMembers(payload: Record<string, unknown>) {
+  // Missing member arrays must not turn a malformed ACL response into a complete empty ACL.
+  return {
+    users: objectArray(payload.users, "dropbox file users", providerResponseError),
+    groups: objectArray(payload.groups, "dropbox file groups", providerResponseError),
+    invitees: objectArray(payload.invitees, "dropbox file invitees", providerResponseError),
+    cursor: payload.cursor == null ? null : requireString(payload.cursor, "dropbox file members cursor"),
   };
 }
 
