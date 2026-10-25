@@ -206,6 +206,67 @@ const listFolderOutputSchema = s.object(
   },
 );
 
+const listFileMembersInputSchema = s.object(
+  {
+    file: nonEmptyString("The Dropbox file ID or path whose members should be listed."),
+    includeInherited: s.boolean({
+      description: "Include members whose access is inherited from a parent shared folder.",
+      default: true,
+    }),
+    limit: s.integer({
+      description: "The maximum number of members to return per page.",
+      minimum: 1,
+      maximum: 300,
+    }),
+  },
+  {
+    description: "Input payload for listing a Dropbox file's members.",
+    required: ["file"],
+  },
+);
+
+const listFileMembersContinueInputSchema = s.object(
+  {
+    cursor: nonEmptyString("The cursor returned by a previous file-member listing."),
+  },
+  {
+    description: "Input payload for continuing a Dropbox file-member listing.",
+    required: ["cursor"],
+  },
+);
+
+const fileMembershipSchema = s.object(
+  {
+    access_type: s.object(
+      { ".tag": textSchema("The Dropbox access level, such as owner, editor, or viewer.") },
+      { required: [".tag"], additionalProperties: true },
+    ),
+    is_inherited: s.boolean("Whether this membership is inherited from a parent shared folder."),
+    permissions: s.array(jsonObjectSchema),
+    user: jsonObjectSchema,
+    group: jsonObjectSchema,
+    invitee: jsonObjectSchema,
+  },
+  {
+    description: "A native Dropbox file membership; user, group, or invitee retains its complete provider record.",
+    required: ["access_type", "is_inherited"],
+    additionalProperties: true,
+  },
+);
+
+const listFileMembersOutputSchema = s.object(
+  {
+    users: s.array(fileMembershipSchema, { description: "User memberships of the shared file." }),
+    groups: s.array(fileMembershipSchema, { description: "Group memberships of the shared file." }),
+    invitees: s.array(fileMembershipSchema, { description: "Invited members who have not claimed the file." }),
+    cursor: s.nullableString("Continue with this cursor; null means the membership listing is complete."),
+  },
+  {
+    description: "One file-membership page, including inherited members by default.",
+    required: ["users", "groups", "invitees", "cursor"],
+  },
+);
+
 const getMetadataInputSchema = s.object(
   {
     path: pathLikeField,
@@ -729,6 +790,24 @@ export const dropboxActions: ActionDefinition[] = [
     providerPermissions: [dropboxProviderScopes.filesMetadataRead],
     inputSchema: listFolderContinueInputSchema,
     outputSchema: listFolderOutputSchema,
+  }),
+  defineProviderAction(service, {
+    name: "list_file_members",
+    operationType: "read",
+    description: "List a Dropbox file's user, group and invited members, including inherited access by default.",
+    requiredScopes: [dropboxProviderScopes.sharingRead],
+    providerPermissions: [dropboxProviderScopes.sharingRead],
+    inputSchema: listFileMembersInputSchema,
+    outputSchema: listFileMembersOutputSchema,
+  }),
+  defineProviderAction(service, {
+    name: "list_file_members_continue",
+    operationType: "read",
+    description: "Continue a Dropbox file-member listing until the returned cursor is null.",
+    requiredScopes: [dropboxProviderScopes.sharingRead],
+    providerPermissions: [dropboxProviderScopes.sharingRead],
+    inputSchema: listFileMembersContinueInputSchema,
+    outputSchema: listFileMembersOutputSchema,
   }),
   defineProviderAction(service, {
     name: "get_metadata",
