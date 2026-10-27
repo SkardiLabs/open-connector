@@ -6,6 +6,16 @@ import { googleDriveFullScope, googleDriveMetadataReadonlyScope, googleDriveRead
 
 const service = "googledrive";
 
+// Shared by every action that returns normalizeDriveFile's metadata shape.
+const fileTreeObservationProperties: Record<string, JsonSchema> = {
+  sharedWithMeTime: s.string("When the file was shared with the authenticated user, when Drive reports it."),
+  shortcutDetails: s.object("The shortcut target observed by Drive. Absent for ordinary files or when not returned.", {
+    targetId: s.string("The ID of the shortcut target."),
+    targetMimeType: s.string("The MIME type of the shortcut target."),
+    targetResourceKey: s.string("The resource key needed to access the shortcut target, when returned."),
+  }),
+};
+
 interface GoogledriveActionSource {
   name: string;
   operationType: ActionDefinition["operationType"];
@@ -395,6 +405,7 @@ const actionSources: GoogledriveActionSource[] = [
                     type: "boolean",
                     description: "Whether the file has been trashed.",
                   },
+                  ...fileTreeObservationProperties,
                   ownedByMe: {
                     type: "boolean",
                     description: "Whether the authenticated user owns the file.",
@@ -1699,6 +1710,7 @@ const actionSources: GoogledriveActionSource[] = [
             type: "boolean",
             description: "Whether the file has been trashed.",
           },
+          ...fileTreeObservationProperties,
           ownedByMe: {
             type: "boolean",
             description: "Whether the authenticated user owns the file.",
@@ -1956,6 +1968,7 @@ const actionSources: GoogledriveActionSource[] = [
                 type: "boolean",
                 description: "Whether the file has been trashed.",
               },
+              ...fileTreeObservationProperties,
               ownedByMe: {
                 type: "boolean",
                 description: "Whether the authenticated user owns the file.",
@@ -1979,6 +1992,9 @@ const actionSources: GoogledriveActionSource[] = [
           },
           description: "The list of files matching the search query.",
         },
+        incompleteSearch: s.boolean(
+          "Whether Drive could not search every requested corpus. Absent means Drive did not report completeness.",
+        ),
         nextPageToken: {
           anyOf: [
             {
@@ -5359,6 +5375,7 @@ const actionSources: GoogledriveActionSource[] = [
           type: "boolean",
           description: "Whether the file has been trashed.",
         },
+        ...fileTreeObservationProperties,
         ownedByMe: {
           type: "boolean",
           description: "Whether the authenticated user owns the file.",
@@ -5596,6 +5613,7 @@ const actionSources: GoogledriveActionSource[] = [
           type: "boolean",
           description: "Whether the file has been trashed.",
         },
+        ...fileTreeObservationProperties,
         ownedByMe: {
           type: "boolean",
           description: "Whether the authenticated user owns the file.",
@@ -6242,6 +6260,7 @@ const actionSources: GoogledriveActionSource[] = [
           type: "boolean",
           description: "Whether the file has been trashed.",
         },
+        ...fileTreeObservationProperties,
         ownedByMe: {
           type: "boolean",
           description: "Whether the authenticated user owns the file.",

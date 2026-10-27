@@ -77,6 +77,8 @@ const driveFileFields = [
   "size",
   "driveId",
   "parents",
+  "sharedWithMeTime",
+  "shortcutDetails(targetId,targetMimeType,targetResourceKey)",
   "owners(displayName,emailAddress,permissionId,photoLink)",
   "shared",
   "starred",
@@ -501,13 +503,15 @@ async function listFiles(input: Record<string, unknown>, accessToken: string, fe
       spaces: optionalString(input.spaces),
       supportsAllDrives: optionalBoolean(input.supportsAllDrives)?.toString(),
       teamDriveId: optionalString(input.teamDriveId),
-      fields: `nextPageToken,files(${driveFileFields})`,
+      fields: `nextPageToken,incompleteSearch,files(${driveFileFields})`,
     }),
   });
 
   const files = Array.isArray(payload.files) ? payload.files : [];
   return {
     files: files.map((file) => normalizeDriveFile(asObject(file))),
+    // Missing is unknown; it must never be promoted to a complete search.
+    incompleteSearch: optionalBoolean(payload.incompleteSearch),
     nextPageToken: optionalString(payload.nextPageToken) ?? null,
   };
 }
@@ -815,6 +819,7 @@ function extensionForExportMimeType(mimeType: string): string {
 }
 
 function normalizeDriveFile(payload: Record<string, unknown>) {
+  const shortcut = asOptionalObject(payload.shortcutDetails);
   return {
     id: String(payload.id ?? ""),
     name: String(payload.name ?? ""),
@@ -824,6 +829,14 @@ function normalizeDriveFile(payload: Record<string, unknown>) {
     modifiedTime: optionalString(payload.modifiedTime) ?? null,
     sizeBytes: parseSizeBytes(payload.size),
     driveId: optionalString(payload.driveId) ?? null,
+    sharedWithMeTime: optionalString(payload.sharedWithMeTime),
+    shortcutDetails: shortcut
+      ? {
+          targetId: optionalString(shortcut.targetId),
+          targetMimeType: optionalString(shortcut.targetMimeType),
+          targetResourceKey: optionalString(shortcut.targetResourceKey),
+        }
+      : undefined,
     ...(Array.isArray(payload.parents) ? { parents: asStringArray(payload.parents) } : {}),
     ...(Array.isArray(payload.owners)
       ? {
