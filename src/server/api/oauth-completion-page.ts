@@ -267,20 +267,28 @@ a.button{text-decoration:none}
 
 export const oauthCompletionLocaleScript = `const pick=()=>{try{const stored=localStorage.getItem("oomol-connect.lang");if(Object.hasOwn(STR,stored))return stored;}catch{}const langs=navigator.languages&&navigator.languages.length?navigator.languages:[navigator.language||"en"];for(const raw of langs){const l=String(raw).toLowerCase();if(l.startsWith("zh"))return (!l.includes("hans")&&(l.includes("tw")||l.includes("hk")||l.includes("mo")||l.includes("hant")))?"zh-TW":"zh-CN";const primary=l.split("-")[0];if(STR[raw])return raw;if(STR[primary])return primary;}return "en";};`;
 
-// Shared by every page this module renders: close the window after a short
-// countdown, or say it can be closed when the browser refuses.
-const oauthCloseWindowScript = `const note=document.querySelector("[data-close-note]");
+/** Seconds the OAuth completion page counts down before it tries to close its window. */
+export const DEFAULT_OAUTH_CLOSE_DELAY_SECONDS = 5;
+
+// Shared by every page this module renders: count down, then close the window,
+// or say it can be closed when the browser refuses.
+function oauthCloseWindowScript(closeDelaySeconds: number): string {
+  return `const note=document.querySelector("[data-close-note]");
 const button=document.querySelector("[data-t=closeButton]");
 const showManual=()=>{if(note)note.textContent=t.manualClose;};
 // window.close() only works for script-opened windows; on a tab the user
 // navigated to it is a no-op. Attempt it, then fall back to a manual hint.
 const tryClose=()=>{window.close();setTimeout(showManual,300);};
 if(button)button.addEventListener("click",tryClose);
-let remaining=5;
+let remaining=${scriptJson(closeDelaySeconds)};
 const tick=()=>{if(remaining<=0){tryClose();return;}if(note)note.textContent=t.autoClose.replace("%N%",String(remaining));remaining-=1;setTimeout(tick,1000);};
 tick();`;
+}
 
-export function renderOAuthCompletionPage(service: string): string {
+export function renderOAuthCompletionPage(
+  service: string,
+  closeDelaySeconds: number = DEFAULT_OAUTH_CLOSE_DELAY_SECONDS,
+): string {
   const payload = scriptJson({
     type: oauthCompletedType,
     service,
@@ -302,7 +310,7 @@ export function renderOAuthCompletionPage(service: string): string {
   </div>
   <div class="actions">
     <button class="button" type="button" data-t="closeButton">Close window</button>
-    <p class="close-note" data-close-note>Automatically closing in 5 seconds.</p>
+    <p class="close-note" data-close-note>Automatically closing in ${closeDelaySeconds} seconds.</p>
   </div>
 </main>
 <script>(()=>{
@@ -313,7 +321,7 @@ const t=STR[pick()]||STR.en;
 document.documentElement.lang=pick();
 for(const el of document.querySelectorAll("[data-t]")){const key=el.getAttribute("data-t");if(t[key]!=null)el.textContent=t[key];}
 if(t.title)document.title=t.title;
-${oauthCloseWindowScript}
+${oauthCloseWindowScript(closeDelaySeconds)}
 })();</script>
 </body>
 </html>`;
@@ -324,7 +332,7 @@ function scriptJson(value: unknown): string {
 }
 
 /** The `type` of the message a refusal page posts to the window that opened it. */
-export const oauthResultMessageType = "skardi-oauth-result";
+export const oauthRefusedType = "oauth.refused";
 
 /**
  * Reads the origins a refusal page may post its result to: a comma-separated
@@ -336,9 +344,9 @@ export function parseOAuthResultOrigins(value: string | undefined): string[] {
 }
 
 /**
- * The same rules for origins given as a list, such as a host's
- * `oauthResultOrigins` runtime option: blank entries are skipped, anything
- * that is not an exact http(s) origin (including `*`) throws.
+ * The same rules for origins given as a list, such as the `oauthResultOrigins`
+ * runtime option: blank entries are skipped and duplicates dropped; anything
+ * that is not an exact http(s) origin, `*` included, throws.
  */
 export function normalizeOAuthResultOrigins(entries: readonly string[]): string[] {
   const origins: string[] = [];
@@ -362,7 +370,7 @@ export function normalizeOAuthResultOrigins(entries: readonly string[]): string[
   return origins;
 }
 
-/** A provider error code safe to echo: short and code-shaped, else `provider_error`. */
+/** A provider error code that is safe to echo: short and code-shaped, else `provider_error`. */
 export function oauthProviderErrorCode(providerError: string): string {
   return /^[A-Za-z0-9_.-]{1,64}$/.test(providerError) ? providerError : "provider_error";
 }
@@ -370,33 +378,35 @@ export function oauthProviderErrorCode(providerError: string): string {
 export interface OAuthRefusedPageInput {
   /** The provider's error code, already passed through `oauthProviderErrorCode`. */
   code: string;
-  /** The OAuth state of the refused authorization, when the callback carried one. */
+  /** The state of the refused authorization; set only when this callback ended a pending one. */
   state?: string;
   /** Origins allowed to receive the result; empty means the page posts nothing. */
   resultOrigins: readonly string[];
+  closeDelaySeconds?: number;
 }
 
 /**
  * The page a provider's refusal lands on when the authorization has no return
  * address. When this window was opened by a page on an allowed origin, it
- * posts `{ type: "skardi-oauth-result", status, code, state }` to that origin
- * only, then closes; otherwise it just says what happened. Success is never
+ * posts `{ type: "oauth.refused", status, code, state }` to that origin only;
+ * either way the shared countdown closes it after `closeDelaySeconds`. Success is never
  * reported this way: the opener learns it from its own server.
  */
 export function renderOAuthRefusedPage(input: OAuthRefusedPageInput): string {
+  const closeDelaySeconds = input.closeDelaySeconds ?? DEFAULT_OAUTH_CLOSE_DELAY_SECONDS;
   const cancelled = input.code === "access_denied";
   const titleKey = cancelled ? "cancelledTitle" : "refusedTitle";
   const strings = oauthCompletionStrings.en;
   const result = {
-    type: oauthResultMessageType,
+    type: oauthRefusedType,
     status: cancelled ? "cancelled" : "error",
     code: input.code,
-    state: input.state ?? null,
+    state: input.state,
   };
   const codeLine = cancelled ? "" : `\n    <p><code>${input.code}</code></p>`;
   const postScript =
     input.resultOrigins.length > 0 && input.state
-      ? `if(window.opener){const result=${scriptJson(result)};for(const origin of ${scriptJson(input.resultOrigins)}){try{window.opener.postMessage(result,origin);}catch{}}window.close();}\n`
+      ? `if(window.opener){const result=${scriptJson(result)};for(const origin of ${scriptJson(input.resultOrigins)}){try{window.opener.postMessage(result,origin);}catch{}}}\n`
       : "";
   return `<!doctype html>
 <html lang="en">
@@ -415,7 +425,7 @@ export function renderOAuthRefusedPage(input: OAuthRefusedPageInput): string {
   </div>
   <div class="actions">
     <button class="button" type="button" data-t="closeButton">${strings.closeButton}</button>
-    <p class="close-note" data-close-note>${strings.autoClose.replace("%N%", "5")}</p>
+    <p class="close-note" data-close-note>${strings.autoClose.replace("%N%", String(closeDelaySeconds))}</p>
   </div>
 </main>
 <script>(()=>{
@@ -425,7 +435,7 @@ const t=STR[pick()]||STR.en;
 document.documentElement.lang=pick();
 for(const el of document.querySelectorAll("[data-t]")){const key=el.getAttribute("data-t");if(t[key]!=null)el.textContent=t[key];}
 if(t[${scriptJson(titleKey)}])document.title=t[${scriptJson(titleKey)}];
-${oauthCloseWindowScript}
+${oauthCloseWindowScript(closeDelaySeconds)}
 })();</script>
 </body>
 </html>`;

@@ -1,9 +1,15 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
-import type { ApiKeyProviderContext, ProviderFetch } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
+import type { ProviderFetch } from "../provider-runtime.ts";
 
 import { compactObject, optionalNumber, optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
-import { createProviderTimeout, providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+import {
+  createProviderTimeout,
+  providerUserAgent,
+  ProviderRequestError,
+  providerInputError,
+} from "../provider-runtime.ts";
 
 export const theColonyApiBaseUrl = "https://thecolony.cc/api/v1";
 
@@ -338,7 +344,7 @@ function mapTheColonyError(status: number, payload: unknown, phase: TheColonyReq
     return new ProviderRequestError(429, message);
   }
   if (phase === "validate" && (status === 401 || status === 403)) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   if (phase === "execute" && (status === 401 || status === 403)) {
     return new ProviderRequestError(401, message);
@@ -421,5 +427,5 @@ function readObjectPayload(payload: unknown, label: string): Record<string, unkn
 }
 
 function readRequiredString(input: Record<string, unknown>, fieldName: string): string {
-  return requiredString(input[fieldName], fieldName, (message) => new ProviderRequestError(400, message));
+  return requiredString(input[fieldName], fieldName, providerInputError);
 }

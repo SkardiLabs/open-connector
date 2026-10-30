@@ -3,13 +3,14 @@ import type { RuntimeActionHttpResult } from "./runtime-api.ts";
 
 import { Hono } from "hono";
 import { describe, expect, it } from "vitest";
+import { providerErrorCodes } from "../../core/provider-error-codes.ts";
 import {
   parseRuntimeActionHttpResult,
-  providerErrorCodes,
   serializeRuntimeAction,
   serializeRuntimeActionResult,
   serializeRuntimeConnectedApp,
   serializeRuntimeFailure,
+  serializeProxyFailure,
   unknownActionFailure,
   writeRuntimeActionHttpResult,
   writeRuntimeFailure,
@@ -31,9 +32,10 @@ describe("provider error codes", () => {
       "insufficient_credit",
       "invalid_input",
       "provider_error",
+      "quota_exhausted",
       "rate_limited",
     ]);
-    expect(providerErrorCodes.map(actionStatusFor)).toEqual([403, 402, 400, 500, 429]);
+    expect(providerErrorCodes.map(actionStatusFor)).toEqual([403, 402, 400, 500, 429, 429]);
   });
 
   it("leaves the connection and dispatch codes out of a provider's reach", () => {
@@ -129,11 +131,13 @@ describe("runtime action HTTP results", () => {
     ["connection_not_found", 404],
     ["unknown_action", 404],
     ["rate_limited", 429],
+    ["quota_exhausted", 429],
     ["insufficient_credit", 402],
     ["provider_error", 500],
     ["internal_error", 500],
     ["oauth_token_expired", 409],
     ["oauth_token_refresh_failed", 409],
+    ["oauth_reauth_required", 409],
     ["invalid_input", 400],
   ] as const)("maps %s execution failures to status %i", (code, status) => {
     expect(
@@ -319,6 +323,51 @@ describe("Retry-After on the action route", () => {
     expect(response.status).toBe(429);
     expect(response.headers.get("retry-after")).toBe("73");
     await expect(response.json()).resolves.toEqual(rateLimited.body);
+  });
+
+  it("preserves monthly quota exhaustion and its retry delay through serialization and replay", async () => {
+    const quotaExhausted = serializeRuntimeActionResult({
+      actionId: "lark.list_chats",
+      executionId: "execution-1",
+      auditPersisted: true,
+      result: {
+        ok: false,
+        error: {
+          code: "quota_exhausted",
+          message: "This month's API call quota has been exceeded",
+          details: { status: 429, details: { providerStatus: 400, providerCode: 99991403, retryAfterSeconds: 172800 } },
+        },
+      },
+    });
+    const response = await write(parseRuntimeActionHttpResult(JSON.parse(JSON.stringify(quotaExhausted))));
+    expect(response.status).toBe(429);
+    expect(response.headers.get("retry-after")).toBe("172800");
+    await expect(response.json()).resolves.toMatchObject({
+      success: false,
+      errorCode: "quota_exhausted",
+      data: { status: 429, details: { providerStatus: 400, providerCode: 99991403, retryAfterSeconds: 172800 } },
+    });
+  });
+
+  it("keeps proxy quota errors at HTTP 429 with the provider reset delay", async () => {
+    const app = new Hono().post("/", (context) =>
+      writeRuntimeFailure(
+        context,
+        serializeProxyFailure({
+          ok: false,
+          errorCode: "quota_exhausted",
+          message: "This month's API call quota has been exceeded",
+          data: { status: 429, details: { retryAfterSeconds: 172800 } },
+        }),
+      ),
+    );
+    const response = await app.request("/", { method: "POST" });
+    expect(response.status).toBe(429);
+    expect(response.headers.get("retry-after")).toBe("172800");
+    await expect(response.json()).resolves.toMatchObject({
+      errorCode: "quota_exhausted",
+      data: { details: { retryAfterSeconds: 172800 } },
+    });
   });
 
   it.each([

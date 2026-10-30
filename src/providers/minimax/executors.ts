@@ -4,19 +4,21 @@ import type {
   ProviderExecutors,
   ProviderProxyExecutor,
 } from "../../core/types.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 import type { ProviderFetch } from "../provider-runtime.ts";
 
 import { createHash } from "node:crypto";
 import { compactObject, optionalRecord, optionalString } from "../../core/cast.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
 import {
-  defineProviderExecutors,
-  defineProviderProxy,
+  providerInputError,
   providerUserAgent,
   ProviderRequestError,
-  requireApiKeyCredential,
   requiredInputString,
 } from "../provider-runtime.ts";
+import { minimaxTextModels, selectMinimaxModels } from "./text-models.ts";
 
 const service = "minimax";
 const minimaxApiBaseUrl = "https://api.minimax.io";
@@ -32,8 +34,9 @@ interface MinimaxActionContext {
 type MinimaxActionHandler = (input: Record<string, unknown>, context: MinimaxActionContext) => Promise<unknown>;
 
 export const minimaxActionHandlers: ProviderActionHandlers<"minimax", MinimaxActionHandler> = {
-  list_models(_input, context) {
-    return minimaxGetJson("/v1/models", context);
+  async list_models(input, context) {
+    const payload = await minimaxGetJson("/v1/models", context);
+    return input.include_legacy === true ? payload : selectMinimaxModels(payload);
   },
   retrieve_model(input, context) {
     const modelId = requiredInputString(input.modelId, "modelId");
@@ -217,9 +220,23 @@ function minimaxHeaders(apiKey: string, headers: Record<string, string>): Record
 }
 
 function normalizeMinimaxBody(input: Record<string, unknown>): Record<string, unknown> {
+  const model = input.model === undefined ? minimaxTextModels[0] : requiredInputString(input.model, "model");
+  if (model === minimaxTextModels[0]) {
+    const effort = optionalRecord(input.reasoning)?.effort;
+    if (effort !== undefined && !["low", "medium", "high", "xhigh", "max"].includes(String(effort))) {
+      throw providerInputError("MiniMax-M3.1-Flash reasoning.effort must be low, medium, high, xhigh, or max");
+    }
+    if (input.service_tier !== undefined) {
+      throw providerInputError("MiniMax-M3.1-Flash does not support service_tier");
+    }
+  }
   return compactObject({
     ...input,
-    model: trimString(input.model),
+    model,
+    reasoning:
+      model === minimaxTextModels[0]
+        ? { ...optionalRecord(input.reasoning), effort: optionalRecord(input.reasoning)?.effort ?? "max" }
+        : input.reasoning,
     input: typeof input.input === "string" ? input.input.trim() : input.input,
     instructions: trimString(input.instructions),
     prompt_cache_key: trimString(input.prompt_cache_key),

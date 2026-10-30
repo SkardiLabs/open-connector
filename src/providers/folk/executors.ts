@@ -1,6 +1,6 @@
 import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import {
   compactObject,
@@ -12,18 +12,14 @@ import {
   optionalString,
   stringArray,
 } from "../../core/cast.ts";
-import {
-  defineApiKeyProviderExecutors,
-  defineProviderProxy,
-  providerUserAgent,
-  ProviderRequestError,
-} from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { providerUserAgent, ProviderRequestError, defaultProviderRequestTimeoutMs } from "../provider-runtime.ts";
 import { folkCompanyMutableKeys, folkPersonMutableKeys } from "./actions.ts";
 
 const service = "folk";
 const folkApiBaseUrl = "https://api.folk.app";
 const folkCurrentUserPath = "/v1/users/me";
-const folkDefaultRequestTimeoutMs = 30_000;
 
 type FolkPhase = "validate" | "execute";
 type FolkActionContext = ApiKeyProviderContext;
@@ -276,7 +272,7 @@ export const credentialValidators: CredentialValidators = {
 };
 
 async function requestFolkJson(context: FolkActionContext, input: FolkRequestInput): Promise<Record<string, unknown>> {
-  const timeoutSignal = AbortSignal.timeout(folkDefaultRequestTimeoutMs);
+  const timeoutSignal = AbortSignal.timeout(defaultProviderRequestTimeoutMs);
   const signal = context.signal ? AbortSignal.any([context.signal, timeoutSignal]) : timeoutSignal;
 
   try {

@@ -1,6 +1,7 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
-import type { ApiKeyProviderContext, ProviderFetch } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
+import type { ProviderFetch } from "../provider-runtime.ts";
 
 import { compactObject, optionalBoolean, optionalRecord, optionalString } from "../../core/cast.ts";
 import {
@@ -8,10 +9,10 @@ import {
   isAbortLikeError,
   providerUserAgent,
   ProviderRequestError,
+  defaultProviderRequestTimeoutMs,
 } from "../provider-runtime.ts";
 
 export const browseAiApiBaseUrl = "https://api.browse.ai/v2/";
-const browseAiDefaultRequestTimeoutMs = 30_000;
 
 type BrowseAiQueryValue = string | number | boolean | undefined;
 type BrowseAiRequestPhase = "validate" | "execute";
@@ -255,7 +256,7 @@ export async function validateBrowseAiCredential(
 }
 
 async function requestBrowseAiJson(input: BrowseAiRequestInput): Promise<unknown> {
-  const timeout = createProviderTimeout(input.signal, browseAiDefaultRequestTimeoutMs);
+  const timeout = createProviderTimeout(input.signal);
   const url = new URL(input.path, browseAiApiBaseUrl);
   for (const [key, value] of Object.entries(input.query ?? {})) {
     if (value !== undefined) {
@@ -286,7 +287,7 @@ async function requestBrowseAiJson(input: BrowseAiRequestInput): Promise<unknown
     if (timeout.didTimeout() && isAbortLikeError(error)) {
       throw new ProviderRequestError(
         504,
-        `browse_ai ${url.pathname} request timed out after ${Math.max(1, Math.ceil(browseAiDefaultRequestTimeoutMs / 1000))} seconds`,
+        `browse_ai ${url.pathname} request timed out after ${Math.max(1, Math.ceil(defaultProviderRequestTimeoutMs / 1000))} seconds`,
       );
     }
 

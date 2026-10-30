@@ -1,4 +1,4 @@
-import type { IConnectionStore, StoredConnection } from "../connection-service.ts";
+import type { IConnectionStore, StoredConnection } from "../connection-store.ts";
 import type {
   ActionExecutor,
   CredentialValidators,
@@ -12,12 +12,15 @@ import type { IOAuthClientConfigStore, OAuthClientConfig } from "./oauth-client-
 import type { IOAuthStateStore, OAuthAuthorizationState } from "./oauth-flow-service.ts";
 import type { ProviderOAuthRuntime } from "./oauth-token.ts";
 
+import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createCatalogStore } from "../catalog-store.ts";
 import { ConnectionService } from "../connection-service.ts";
 import { provider as slackProvider } from "../providers/slack/definition.ts";
 import { provider as slackbotProvider } from "../providers/slackbot/definition.ts";
+import { executors as slackbotExecutors } from "../providers/slackbot/executors.ts";
 import { provider as tencentDocsProvider } from "../providers/tencent_docs/definition.ts";
+import { provider as zoomProvider } from "../providers/zoom/definition.ts";
 import { AesGcmSecretCodec } from "../server/secrets/secret-codec.ts";
 import { SqliteRuntimeDatabase } from "../server/storage/sqlite/runtime-store.ts";
 import { OAuthClientConfigService } from "./oauth-client-config-service.ts";
@@ -688,6 +691,68 @@ describe("OAuthFlowService", () => {
     await expect(services.connections.getCredential("example")).resolves.toBeUndefined();
   });
 
+  it("keeps the Slack bot install identity and excludes top-level tokens from metadata", async () => {
+    const services = createServices([{ ...slackbotProvider, actions: [] }]);
+    await services.clientConfigs.upsertConfig({
+      service: "slackbot",
+      clientId: "bot-client-id",
+      clientSecret: "bot-client-secret",
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({
+          ok: true,
+          access_token: "xoxb-bot-secret",
+          refresh_token: "xoxe-refresh-secret",
+          token_type: "bot",
+          expires_in: 43_200,
+          scope: "chat:write,im:write",
+          bot_user_id: "UBOT0001",
+          app_id: "A0APP0001",
+          team: { id: "T0TEAM001", name: "Example Workspace" },
+          authed_user: { id: "U0ADMIN01", access_token: "xoxp-user-secret", refresh_token: "xoxe-user-secret" },
+        }),
+      ),
+    );
+
+    const started = await services.flow.startAuthorization({ service: "slackbot" });
+    await services.flow.completeAuthorization({ state: started.state, code: "bot-code" });
+
+    const credential = await services.connections.getCredential("slackbot");
+    expect(credential).toMatchObject({
+      authType: "oauth2",
+      accessToken: "xoxb-bot-secret",
+      metadata: {
+        bot_user_id: "UBOT0001",
+        app_id: "A0APP0001",
+        team: { id: "T0TEAM001", name: "Example Workspace" },
+        authed_user: { id: "U0ADMIN01" },
+      },
+    });
+    if (credential?.authType !== "oauth2") throw new Error("Expected an OAuth credential");
+    const metadata = JSON.stringify(credential.metadata);
+    expect(metadata).not.toContain("xoxb-bot-secret");
+    expect(metadata).not.toContain("xoxe-refresh-secret");
+
+    // Reading installation metadata needs no additional request with a fresh credential.
+    const slackRequests = vi.mocked(fetch).mock.calls.length;
+    const install = slackbotExecutors["slackbot.get_installation"]!;
+    await expect(
+      install({}, { getCredential: async (service) => services.connections.getCredential(service) }),
+    ).resolves.toMatchObject({
+      ok: true,
+      output: {
+        teamId: "T0TEAM001",
+        teamName: "Example Workspace",
+        authedUserId: "U0ADMIN01",
+        botUserId: "UBOT0001",
+        appId: "A0APP0001",
+      },
+    });
+    expect(vi.mocked(fetch).mock.calls.length).toBe(slackRequests);
+  });
+
   it("uses separate Slack user and bot authorization paths with the same OAuth app", async () => {
     const services = createServices([
       { ...slackProvider, actions: [] },
@@ -1177,12 +1242,37 @@ describe("OAuthFlowService", () => {
     expect(vi.mocked(fetch).mock.calls[0]?.[0]).toBe("https://tenant.example.com/oauth/tenant%2Fa/token");
   });
 
+  it("passes the matching PKCE verifier to a custom token exchange", async () => {
+    let verifier: string | undefined;
+    const services = createServices([pkceOAuthProvider], {
+      oauthRuntime: {
+        async exchangeCode(input) {
+          verifier = input.codeVerifier;
+          return { accessToken: "custom-token", tokenType: "Bearer", metadata: {} };
+        },
+      },
+    });
+    await services.clientConfigs.upsertConfig({ service: "pkce", clientId: "client-id", clientSecret: "secret" });
+    const started = await services.flow.startAuthorization({ service: "pkce" });
+    await services.flow.completeAuthorization({ state: started.state, code: "authorization-code" });
+    expect(verifier).toBeDefined();
+    expect(createHash("sha256").update(verifier!).digest("base64url")).toBe(
+      new URL(started.authorizationUrl).searchParams.get("code_challenge"),
+    );
+  });
+
   it("stores the token returned by a provider OAuth runtime", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-01T00:00:00.000Z"));
     let callbackParameters: Record<string, string> | undefined;
+    let callbackQuery: string | undefined;
+    let callbackState: string | undefined;
     const services = createServices([oauthProvider], {
       oauthRuntime: {
         async exchangeCode(input) {
           callbackParameters = input.callbackParameters;
+          callbackQuery = input.callbackQuery;
+          callbackState = input.state;
           return {
             accessToken: "provider-access-token",
             refreshToken: "provider-access-token",
@@ -1206,6 +1296,7 @@ describe("OAuthFlowService", () => {
       state: started.state,
       code: "authorization-code",
       callbackParameters: { shop_id: "42" },
+      callbackQuery: "?shop_id=41&shop_id=42&hmac=signature",
     });
 
     await expect(services.connections.getCredential("example")).resolves.toMatchObject({
@@ -1217,6 +1308,8 @@ describe("OAuthFlowService", () => {
       metadata: { permissions: "read,write" },
     });
     expect(callbackParameters).toEqual({ shop_id: "42" });
+    expect(callbackQuery).toBe("?shop_id=41&shop_id=42&hmac=signature");
+    expect(callbackState).toBe(started.state);
   });
 
   it("rejects OAuth endpoint config values that resolve to local network targets", async () => {
@@ -1421,3 +1514,26 @@ class MemoryOAuthStateStore implements IOAuthStateStore {
     return value;
   }
 }
+
+it.each(["cloud_recording:read:recording", "cloud_recording:read:recording:admin"])(
+  "requests Zoom recording access only when explicitly selected: %s",
+  async (recordingScope) => {
+    const services = createServices([{ ...zoomProvider, actions: [] }]);
+    await services.clientConfigs.upsertConfig({ service: "zoom", clientId: "client", clientSecret: "secret" });
+    const meeting = await services.flow.startAuthorization({ service: "zoom" });
+    const defaultScopes = new URL(meeting.authorizationUrl).searchParams.get("scope")!.split(" ");
+    expect(defaultScopes).toContain("meeting:write:meeting");
+    expect(defaultScopes.some((scope) => scope.startsWith("cloud_recording:"))).toBe(false);
+    await services.clientConfigs.upsertConfig({
+      service: "zoom",
+      clientId: "client",
+      clientSecret: "secret",
+      requestedScopes: [...defaultScopes, recordingScope],
+    });
+    const recording = await services.flow.startAuthorization({ service: "zoom" });
+    expect(new URL(recording.authorizationUrl).searchParams.get("scope")!.split(" ")).toEqual([
+      ...defaultScopes,
+      recordingScope,
+    ]);
+  },
+);

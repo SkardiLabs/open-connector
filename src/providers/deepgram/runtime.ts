@@ -1,5 +1,5 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
 import {
   optionalNumber,
@@ -11,7 +11,12 @@ import {
   recordOrEmpty,
 } from "../../core/cast.ts";
 import { encodePathSegment } from "../../core/request.ts";
-import { providerUserAgent, ProviderRequestError, runProviderRequest } from "../provider-runtime.ts";
+import {
+  providerUserAgent,
+  ProviderRequestError,
+  runProviderRequest,
+  providerInputError,
+} from "../provider-runtime.ts";
 
 export const deepgramApiBaseUrl: string = "https://api.deepgram.com/v1";
 
@@ -220,7 +225,7 @@ function createDeepgramError(status: number, payload: unknown, phase: DeepgramPh
   }
 
   if (phase === "validate" && status >= 400 && status < 500) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
 
   if (phase === "execute" && (status === 401 || status === 403)) {

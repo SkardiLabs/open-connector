@@ -1,16 +1,13 @@
 import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
 import type { IntegrationDefinition } from "../../triggers/common/integration.ts";
 import type { PollDefinition } from "../../triggers/common/poll.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
-import type { OAuthProviderContext } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { OAuthProviderContext } from "../provider-executors.ts";
 
-import { compactObject, optionalString, requiredRecord } from "../../core/cast.ts";
-import {
-  defineOAuthProviderExecutors,
-  defineProviderProxy,
-  providerInputError,
-  ProviderRequestError,
-} from "../provider-runtime.ts";
+import { compactObject, optionalString, requiredBoolean, requiredRecord } from "../../core/cast.ts";
+import { defineOAuthProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { providerInputError, requiredInputString, ProviderRequestError } from "../provider-runtime.ts";
 import { microsoftGraphJson, microsoftGraphRequest } from "./microsoft-graph.ts";
 import { outlookMessageReceived } from "./trigger-on-message-received.ts";
 
@@ -50,6 +47,30 @@ const outlookActionHandlers: ProviderActionHandlers<"outlook", OutlookActionHand
   },
   get_message(input, deps) {
     return getMessage(input, deps);
+  },
+  move_message(input, deps) {
+    return moveMessage(input, requiredInputString(input.destinationId, "destinationId"), deps);
+  },
+  archive_message(input, deps) {
+    return moveMessage(input, "archive", deps);
+  },
+  async delete_message(input, { accessToken, fetcher, signal }) {
+    await outlookRequest(`me/messages/${encodeURIComponent(requiredInputString(input.messageId, "messageId"))}`, {
+      accessToken,
+      fetcher,
+      signal,
+      method: "DELETE",
+    });
+    return { success: true };
+  },
+  set_message_read(input, { accessToken, fetcher, signal }) {
+    return outlookJsonRequest(`me/messages/${encodeURIComponent(requiredInputString(input.messageId, "messageId"))}`, {
+      accessToken,
+      fetcher,
+      signal,
+      method: "PATCH",
+      body: { isRead: requiredBoolean(input.isRead, "isRead", providerInputError) },
+    });
   },
   create_draft(input, deps) {
     return createDraft(input, deps);
@@ -299,6 +320,23 @@ async function getMessage(input: Record<string, unknown>, { accessToken, fetcher
     query,
     headers,
   });
+}
+
+async function moveMessage(
+  input: Record<string, unknown>,
+  destinationId: string,
+  { accessToken, fetcher, signal }: OutlookRuntimeDeps,
+) {
+  return outlookJsonRequest(
+    `me/messages/${encodeURIComponent(requiredInputString(input.messageId, "messageId"))}/move`,
+    {
+      accessToken,
+      fetcher,
+      signal,
+      method: "POST",
+      body: { destinationId },
+    },
+  );
 }
 
 async function createDraft(input: Record<string, unknown>, { accessToken, fetcher }: OutlookRuntimeDeps) {

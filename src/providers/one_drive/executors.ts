@@ -1,18 +1,16 @@
 import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
 import type { IntegrationDefinition } from "../../triggers/common/integration.ts";
 import type { PollDefinition } from "../../triggers/common/poll.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
-import type { OAuthProviderContext } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { OAuthProviderContext } from "../provider-executors.ts";
 
 import { Buffer } from "node:buffer";
 import { compactObject, requiredRecord } from "../../core/cast.ts";
-import { readBoundedResponseBytes } from "../../core/request.ts";
-import {
-  defineOAuthProviderExecutors,
-  defineProviderProxy,
-  ProviderRequestError,
-  readTransitFileInput,
-} from "../provider-runtime.ts";
+import { storeResponseInTransit } from "../../core/request.ts";
+import { defineOAuthProviderExecutors } from "../provider-executors.ts";
+import { readTransitFileInput } from "../provider-files.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { ProviderRequestError, providerInputError, providerResponseError } from "../provider-runtime.ts";
 import { oneDriveItemChanged } from "./trigger-on-item-changed.ts";
 
 const graphBaseUrl = "https://graph.microsoft.com/v1.0";
@@ -325,7 +323,7 @@ export async function assertOneDriveResponse(response: Response): Promise<void> 
   const { code, message } = await extractOneDriveError(response);
 
   if (response.status === 400) {
-    throw new ProviderRequestError(400, message);
+    throw providerInputError(message);
   }
   if (response.status === 401) {
     throw new ProviderRequestError(401, message);
@@ -337,10 +335,10 @@ export async function assertOneDriveResponse(response: Response): Promise<void> 
     throw new ProviderRequestError(403, message);
   }
   if (response.status === 404) {
-    throw new ProviderRequestError(400, message);
+    throw providerInputError(message);
   }
   if (response.status === 409 || response.status === 412) {
-    throw new ProviderRequestError(400, message);
+    throw providerInputError(message);
   }
   if (response.status === 429) {
     throw new ProviderRequestError(429, message);
@@ -736,12 +734,13 @@ async function downloadDriveItem(input: {
   const name = resolveDownloadFileName(metadata, input.format);
   const transitName = input.fileName ?? name;
   const mimeType = resolveDownloadMimeType(metadata, response, input.format);
-  const bytes = await readBoundedResponseBytes(response, {
-    maxBytes: transitFiles.maxBytes,
+  const file = await storeResponseInTransit(response, transitFiles, {
+    name: transitName,
+    mimeType,
     fieldName: "OneDrive download",
     createError: (message) => new ProviderRequestError(413, message),
+    signal: input.deps.signal,
   });
-  const file = await transitFiles.create(new File([toArrayBuffer(bytes)], transitName, { type: mimeType }));
 
   return {
     fileId,
@@ -1074,7 +1073,7 @@ function resolveUploadChunkSize(remainingBytes: number) {
 async function buildUploadSessionError(response: Response) {
   const { message } = await extractOneDriveError(response);
   if (response.status === 400 || response.status === 409 || response.status === 412) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   if (response.status === 404) {
     return new ProviderRequestError(404, "one_drive upload session expired");
@@ -1354,7 +1353,7 @@ function requireString(value: unknown, fieldName: string) {
 }
 
 function asObject(value: unknown): Record<string, unknown> {
-  return requiredRecord(value, "object input", (message) => new ProviderRequestError(502, message));
+  return requiredRecord(value, "object input", providerResponseError);
 }
 
 function readOptionalPresentString(input: Record<string, unknown>, key: string) {

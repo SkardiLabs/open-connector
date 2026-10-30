@@ -1,28 +1,30 @@
 import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { compactObject, optionalInteger, optionalRecord, optionalString } from "../../core/cast.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
 import {
-  createProviderFetch,
   createProviderProxyUrl,
-  createProviderTimeout,
-  defineApiKeyProviderExecutors,
-  isAbortLikeError,
   normalizeProviderProxyHeaders,
   normalizeProviderProxyQuery,
-  ProviderRequestError,
-  providerUserAgent,
   readProviderProxyErrorMessage,
   readProviderProxyResponse,
-  requireApiKeyCredential,
-  requiredResponseRecord,
   toProviderProxyError,
+} from "../provider-proxy.ts";
+import {
+  createProviderFetch,
+  createProviderTimeout,
+  isAbortLikeError,
+  ProviderRequestError,
+  providerUserAgent,
+  requiredResponseRecord,
+  defaultProviderRequestTimeoutMs,
 } from "../provider-runtime.ts";
 
 const service = "uptimerobot";
 const uptimerobotApiBaseUrl = "https://api.uptimerobot.com/v2";
-const uptimerobotDefaultRequestTimeoutMs = 30_000;
 
 // Fixed-host proxy egress (uptimerobotApiBaseUrl); DNS-rebinding check is redundant here.
 const uptimerobotProxyFetch = createProviderFetch({ skipDnsValidation: true });
@@ -189,7 +191,7 @@ async function uptimerobotFetch(input: {
   endpoint: string;
   body?: URLSearchParams;
 }): Promise<Response> {
-  const timeout = createProviderTimeout(input.context.signal, uptimerobotDefaultRequestTimeoutMs);
+  const timeout = createProviderTimeout(input.context.signal);
   const body = new URLSearchParams(input.body);
   body.set("api_key", input.context.apiKey);
   body.set("format", "json");
@@ -208,7 +210,7 @@ async function uptimerobotFetch(input: {
     if (timeout.didTimeout() && isAbortLikeError(error)) {
       throw new ProviderRequestError(
         504,
-        `uptimerobot ${input.endpoint} request timed out after ${Math.ceil(uptimerobotDefaultRequestTimeoutMs / 1000)} seconds`,
+        `uptimerobot ${input.endpoint} request timed out after ${Math.ceil(defaultProviderRequestTimeoutMs / 1000)} seconds`,
       );
     }
     throw new ProviderRequestError(

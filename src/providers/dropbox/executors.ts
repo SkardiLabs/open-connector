@@ -4,8 +4,8 @@ import type {
   ProviderProxyExecutor,
   TransitFileWriter,
 } from "../../core/types.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
-import type { OAuthProviderContext } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { OAuthProviderContext } from "../provider-executors.ts";
 
 import { Buffer } from "node:buffer";
 import {
@@ -18,19 +18,16 @@ import {
   requiredRecord,
 } from "../../core/cast.ts";
 import { storeResponseInTransit } from "../../core/request.ts";
+import { requireOAuthCredential } from "../provider-credentials.ts";
+import { defineOAuthProviderExecutors } from "../provider-executors.ts";
 import {
-  createProviderFetch,
   createProviderProxyUrl,
-  defineOAuthProviderExecutors,
   normalizeProviderProxyEndpoint,
   normalizeProviderProxyHeaders,
-  ProviderRequestError,
-  providerResponseError,
-  providerUserAgent,
   readProviderProxyResponse,
-  requireOAuthCredential,
   toProviderProxyError,
-} from "../provider-runtime.ts";
+} from "../provider-proxy.ts";
+import { createProviderFetch, ProviderRequestError, providerResponseError, providerUserAgent } from "../provider-runtime.ts";
 
 const dropboxApiBaseUrl = "https://api.dropboxapi.com/2";
 const dropboxContentBaseUrl = "https://content.dropboxapi.com/2";

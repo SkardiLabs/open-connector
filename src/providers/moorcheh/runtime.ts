@@ -1,10 +1,15 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
-import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-executors.ts";
 
 import { optionalInteger, optionalNumber, optionalRecord, optionalString, requiredRecord } from "../../core/cast.ts";
 import { jsonObject } from "../../core/request.ts";
-import { createProviderTimeout, providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+import {
+  createProviderTimeout,
+  providerUserAgent,
+  ProviderRequestError,
+  providerInputError,
+} from "../provider-runtime.ts";
 
 export const moorchehApiBaseUrl = "https://api.moorcheh.ai/v1";
 
@@ -212,7 +217,7 @@ function createMoorchehError(status: number, payload: unknown, phase: RequestPha
     return new ProviderRequestError(429, message);
   }
   if (phase === "validate" && status >= 400 && status < 500) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   if (status === 401 || status === 403) {
     return new ProviderRequestError(status, message);
@@ -255,7 +260,7 @@ function readDocuments(value: unknown): Record<string, unknown>[] {
   }
 
   return value.map((item, index) => {
-    const document = requiredRecord(item, `documents[${index}]`, (message) => new ProviderRequestError(400, message));
+    const document = requiredRecord(item, `documents[${index}]`, providerInputError);
     return {
       ...document,
       id: readRequiredTrimmedString(document.id, `documents[${index}].id`),

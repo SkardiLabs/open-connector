@@ -1,5 +1,5 @@
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
-import type { BearerProviderContext } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { BearerProviderContext } from "../provider-executors.ts";
 
 import { createHash } from "node:crypto";
 import {
@@ -15,13 +15,9 @@ import {
   requiredString,
   stringArray,
 } from "../../core/cast.ts";
-import { jsonObject, readBoundedResponseBytes } from "../../core/request.ts";
-import {
-  providerInputError,
-  ProviderRequestError,
-  providerUserAgent,
-  readTransitFileInput,
-} from "../provider-runtime.ts";
+import { jsonObject, readBoundedResponseBytes, storeResponseInTransit } from "../../core/request.ts";
+import { readTransitFileInput } from "../provider-files.ts";
+import { providerInputError, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
 import { supabaseProviderScopes } from "./scopes.ts";
 
 export const supabaseApiBaseUrl: string = "https://api.supabase.com/v1";
@@ -601,12 +597,13 @@ async function supabaseDownloadStorageObject(
 
   const name = optionalString(input.fileName) ?? defaultStorageObjectName(objectPath);
   const mimeType = optionalString(response.headers.get("content-type")) ?? "application/octet-stream";
-  const bytes = await readBoundedResponseBytes(response, {
-    maxBytes: context.transitFiles.maxBytes,
+  const file = await storeResponseInTransit(response, context.transitFiles, {
+    name,
+    mimeType,
     fieldName: "Supabase Storage download",
     createError: (message) => new ProviderRequestError(413, message),
+    signal: context.signal,
   });
-  const file = await context.transitFiles.create(new File([Uint8Array.from(bytes)], name, { type: mimeType }));
 
   return {
     fileId: `${bucketId}/${objectPath}`,

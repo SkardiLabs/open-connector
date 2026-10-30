@@ -415,3 +415,41 @@ describe("OAuthCredentialRefreshService revoke", () => {
     expect(fetcher).not.toHaveBeenCalled();
   });
 });
+
+describe("Feishu refresh override integration", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it.each([
+    [20037, "oauth_token_refresh_failed"],
+    [undefined, "provider_error"],
+  ])("preserves the provider classification for error %s through the loader", async (code, expectedCode) => {
+    const providerLoader = new ProviderLoader({ feishu: () => import("../providers/feishu/executors.ts") });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ code, error_description: "Rejected" }, { status: 401 })),
+    );
+    await expect(
+      new OAuthCredentialRefreshService(clientConfigs, providerLoader).refresh(
+        "feishu",
+        expiredCredential({ expires_in: 3600 }),
+      ),
+    ).rejects.toMatchObject({ code: expectedCode });
+  });
+
+  it("retains refresh token, scopes and expiry when Feishu rotates only the access token", async () => {
+    const providerLoader = new ProviderLoader({ feishu: () => import("../providers/feishu/executors.ts") });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ code: 0, access_token: "rotated" })),
+    );
+    const previous = expiredCredential({ expires_in: 3600, scope: "offline_access" });
+    const refreshed = await new OAuthCredentialRefreshService(clientConfigs, providerLoader).refresh(
+      "feishu",
+      previous,
+    );
+    expect(refreshed.accessToken).toBe("rotated");
+    expect(refreshed.refreshToken).toBe(previous.refreshToken);
+    expect(refreshed.metadata.scope).toBe("offline_access");
+    expect(Date.parse(refreshed.expiresAt!)).toBeGreaterThan(Date.now());
+  });
+});

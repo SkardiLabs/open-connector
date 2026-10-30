@@ -1,6 +1,6 @@
 import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
-import type { OAuthProviderContext } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { OAuthProviderContext } from "../provider-executors.ts";
 import type { SlackNormalizedConversationType } from "./constants.ts";
 
 import {
@@ -13,10 +13,10 @@ import {
   optionalStringArray,
   requiredString,
 } from "../../core/cast.ts";
-import { assertPublicHttpUrl, readBoundedResponseBytes } from "../../core/request.ts";
+import { assertPublicHttpUrl, readBoundedResponseBytes, storeResponseInTransit } from "../../core/request.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
 import {
   createProviderTimeout,
-  defineProviderExecutors,
   isAbortLikeError,
   ProviderRequestError,
   providerInputError,
@@ -32,7 +32,10 @@ import { slackConversationTypes } from "./constants.ts";
 export const slackApiBaseUrl = "https://slack.com/api";
 const slackFileUrlMaxBytes = 100 * 1024 * 1024;
 
-type SlackActionContext = Omit<OAuthProviderContext, "providerSecret" | "tokenType">;
+interface SlackActionContext extends Omit<OAuthProviderContext, "providerSecret" | "tokenType"> {
+  /** Stored OAuth response metadata; empty for API-key credentials. */
+  metadata: Record<string, unknown>;
+}
 type SlackOAuthTokenKind = "bot" | "user";
 
 interface SlackPayloadError {
@@ -63,6 +66,7 @@ export function defineSlackProviderExecutors(
     async createContext(context, fetcher): Promise<SlackActionContext> {
       const credential = await context.getCredential(service);
       let accessToken: string;
+      let metadata: Record<string, unknown> = {};
       if (credential?.authType === "oauth2") {
         if (readSlackTokenKind(credential.accessToken, credential.metadata) != tokenKind) {
           throw new ProviderRequestError(
@@ -71,6 +75,7 @@ export function defineSlackProviderExecutors(
           );
         }
         accessToken = credential.accessToken;
+        metadata = credential.metadata;
       } else if (credential?.authType === "api_key") {
         // A pasted token was authorized by no OAuth flow, so the user/bot flow
         // gate above has nothing to check for it; Slack enforces its own
@@ -83,6 +88,7 @@ export function defineSlackProviderExecutors(
       const providerContext: SlackActionContext = {
         accessToken,
         fetcher,
+        metadata,
         signal: context.signal,
       };
       if (context.transitFiles) {
@@ -249,6 +255,28 @@ function slackCredentialProfile(payload: SlackAuthTestPayload): { accountId: str
 async function slackGetCurrentUser(context: SlackActionContext): Promise<unknown> {
   const identity = readSlackAuthTestIdentity(await slackAuthTest(context));
   return { teamId: identity.teamId, userId: identity.userId, isBot: identity.botId !== undefined };
+}
+
+/** Read the workspace and installer from stored OAuth metadata. */
+export async function slackbotInstallationHandler(
+  _input: Record<string, unknown>,
+  context: SlackActionContext,
+): Promise<unknown> {
+  const team = optionalRecord(context.metadata.team);
+  const authedUser = optionalRecord(context.metadata.authed_user);
+  const teamId = optionalString(team?.id);
+  const authedUserId = optionalString(authedUser?.id);
+  const botUserId = optionalString(context.metadata.bot_user_id);
+  if (!teamId || !authedUserId || !botUserId) {
+    return null;
+  }
+  return {
+    teamId,
+    teamName: optionalString(team?.name) ?? null,
+    authedUserId,
+    botUserId,
+    appId: optionalString(context.metadata.app_id) ?? null,
+  };
 }
 
 async function slackListChannels(input: Record<string, unknown>, context: SlackActionContext): Promise<unknown> {
@@ -885,14 +913,14 @@ async function slackDownloadFile(input: Record<string, unknown>, context: SlackA
       if (mimeType.split(";")[0]?.trim().toLowerCase() === "text/html" && metadata.mimetype !== "text/html") {
         throw providerResponseError("Slack returned an HTML page instead of the requested file");
       }
-      const bytes = await readBoundedResponseBytes(response, {
-        maxBytes: transitFiles.maxBytes,
+      const name = optionalString(metadata.name) ?? fileId;
+      const file = await storeResponseInTransit(response, transitFiles, {
+        name,
+        mimeType,
         fieldName: "Slack file download",
         createError: (message) => new ProviderRequestError(413, message),
+        signal,
       });
-      signal.throwIfAborted();
-      const name = optionalString(metadata.name) ?? fileId;
-      const file = await transitFiles.create(new File([Uint8Array.from(bytes)], name, { type: mimeType }));
       return { fileId, file };
     } finally {
       await response.body?.cancel().catch(() => undefined);

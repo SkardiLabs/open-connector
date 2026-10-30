@@ -1,6 +1,6 @@
 import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import {
   compactObject,
@@ -11,19 +11,18 @@ import {
   rawStringOrNull,
   requiredString,
 } from "../../core/cast.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
 import {
   createProviderTimeout,
-  defineApiKeyProviderExecutors,
-  defineProviderProxy,
   ProviderRequestError,
   providerUserAgent,
+  defaultProviderRequestTimeoutMs,
 } from "../provider-runtime.ts";
 
 const service = "woodpecker_co";
 
 export const woodpeckerCoApiBaseUrl = "https://api.woodpecker.co/rest";
-
-const woodpeckerCoDefaultRequestTimeoutMs = 30_000;
 
 type WoodpeckerCoPhase = "validate" | "execute";
 type WoodpeckerCoContext = Pick<ApiKeyProviderContext, "apiKey" | "fetcher" | "signal">;
@@ -222,7 +221,7 @@ async function requestWoodpeckerCoJson(input: {
     }
   }
 
-  const timeout = createProviderTimeout(input.context.signal, woodpeckerCoDefaultRequestTimeoutMs);
+  const timeout = createProviderTimeout(input.context.signal);
 
   let response: Response;
   try {
@@ -239,7 +238,7 @@ async function requestWoodpeckerCoJson(input: {
     throw new ProviderRequestError(
       timeout.didTimeout() ? 504 : 502,
       timeout.didTimeout()
-        ? `Woodpecker.co request timed out after ${woodpeckerCoDefaultRequestTimeoutMs}ms`
+        ? `Woodpecker.co request timed out after ${defaultProviderRequestTimeoutMs}ms`
         : `Woodpecker.co request failed: ${error instanceof Error ? error.message : "Unknown transport error"}`,
       error,
     );

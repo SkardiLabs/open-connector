@@ -1,6 +1,6 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
-import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-executors.ts";
 
 import {
   booleanString,
@@ -12,7 +12,7 @@ import {
   requiredString,
   stringRecord,
 } from "../../core/cast.ts";
-import { readBoundedResponseBytes } from "../../core/request.ts";
+import { storeResponseInTransit } from "../../core/request.ts";
 import { providerInputError, providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
 
 const elevenreaderApiOrigin = "https://api.elevenlabs.io";
@@ -205,14 +205,15 @@ async function readElevenreaderText(
   }
 
   const contentType = response.headers.get("content-type") ?? "application/octet-stream";
-  const bytes = await readBoundedResponseBytes(response, {
-    maxBytes: context.transitFiles.maxBytes,
-    fieldName: "ElevenReader audio",
-    createError: (message) => new ProviderRequestError(413, message),
-  });
   const extension = inferElevenreaderAudioExtension(contentType, outputFormat);
   const name = `elevenreader-${voiceId}.${extension}`;
-  const upload = await context.transitFiles.create(new File([Uint8Array.from(bytes)], name, { type: contentType }));
+  const upload = await storeResponseInTransit(response, context.transitFiles, {
+    name,
+    mimeType: contentType,
+    fieldName: "ElevenReader audio",
+    createError: (message) => new ProviderRequestError(413, message),
+    signal: context.signal,
+  });
 
   return compactObject({
     file: {
@@ -318,7 +319,7 @@ async function createElevenreaderError(
     return new ProviderRequestError(429, message);
   }
   if (response.status >= 400 && response.status < 500) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   return new ProviderRequestError(response.status >= 400 && response.status < 600 ? response.status : 502, message);
 }

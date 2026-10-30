@@ -5,17 +5,25 @@ import type {
   ProviderExecutors,
   ProviderProxyExecutor,
 } from "../../core/types.ts";
-import type { OAuthProviderContext, ProviderProxyDefinition } from "../provider-runtime.ts";
+import type { ProviderOAuthRuntime } from "../../oauth/oauth-token.ts";
+import type { OAuthProviderContext } from "../provider-executors.ts";
+import type { ProviderProxyDefinition } from "../provider-proxy.ts";
 import type { FeishuActionRuntimeContext } from "./shared/client.ts";
 import type { FeishuCloud } from "./shared/cloud.ts";
 
-import { optionalString } from "../../core/cast.ts";
+import { optionalNumber, optionalString } from "../../core/cast.ts";
+import { expiresAtFromLifetime } from "../../oauth/oauth-token.ts";
 import {
   defineOAuthProviderExecutors,
-  defineProviderProxy,
   getProviderActionHandler,
   mapProviderActionHandlers,
+} from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import {
   ProviderRequestError,
+  readProviderJsonBody,
+  requiredResponseRecord,
+  runProviderRequest,
 } from "../provider-runtime.ts";
 import { feishuActions } from "./actions.ts";
 import { feishuActionHandlers, fetchFeishuUserInfo } from "./runtime.ts";
@@ -25,7 +33,7 @@ import { createFeishuAttendanceActionHandlers } from "./shared/attendance-runtim
 import { createFeishuBaseAdvancedActionHandlers } from "./shared/base-advanced-runtime.ts";
 import { createFeishuBaseActionHandlers } from "./shared/base-runtime.ts";
 import { createFeishuCalendarActionHandlers } from "./shared/calendar-runtime.ts";
-import { createFeishuJsonRequest } from "./shared/client.ts";
+import { createFeishuJsonRequest, readFeishuErrorResponse, readFeishuQuotaError } from "./shared/client.ts";
 import { feishuCloud } from "./shared/cloud.ts";
 import { createFeishuContactActionHandlers } from "./shared/contact-runtime.ts";
 import { createFeishuDocsActionHandlers } from "./shared/docs-runtime.ts";
@@ -58,6 +66,67 @@ interface FeishuHandler {
 export interface FeishuProviderModule {
   readonly executors: ProviderExecutors;
   readonly credentialValidators: CredentialValidators;
+  readonly oauth: ProviderOAuthRuntime;
+}
+
+const expiredRefreshTokenCodes = new Set([20037, 20064, 20073]);
+
+/**
+ * Feishu's refresh errors distinguish expired tokens from client configuration
+ * failures. The token endpoint lives on the provider's own deployment host, so
+ * a Lark refresh token is never spent against open.feishu.cn.
+ */
+function createFeishuOAuthRuntime(service: string, cloud: FeishuCloud): ProviderOAuthRuntime {
+  const label = service === "lark" ? "Lark" : "Feishu";
+  return {
+    async refreshAccessToken(input) {
+      const { payload, ok, status } = await runProviderRequest({ label: `${label} OAuth refresh` }, async (signal) => {
+        const response = await input.fetcher(`${cloud.openBaseUrl}/authen/v2/oauth/token`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            grant_type: "refresh_token",
+            client_id: input.clientConfig.clientId,
+            client_secret: input.clientConfig.clientSecret,
+            refresh_token: input.refreshToken,
+          }),
+          redirect: "manual",
+          signal,
+        });
+        const payload = requiredResponseRecord(
+          await readProviderJsonBody(response, {
+            maxBytes: 1024 * 1024,
+            emptyBody: {},
+            invalidJsonMessage: `${label} returned invalid token JSON`,
+          }),
+          `${label} token response`,
+        );
+        return { payload, ok: response.ok, status: response.status };
+      });
+      const code = optionalNumber(payload.code);
+      if (!ok || (code !== undefined && code !== 0)) {
+        const message = `${label} ${code ?? status}: ${optionalString(payload.error_description) ?? optionalString(payload.msg) ?? optionalString(payload.error) ?? "Token request failed"}`;
+        if (code !== undefined && expiredRefreshTokenCodes.has(code)) throw input.createError(message);
+        throw new ProviderRequestError(ok ? 400 : status, message, undefined, "provider_error");
+      }
+      const accessToken = optionalString(payload.access_token);
+      if (!accessToken)
+        throw new ProviderRequestError(
+          502,
+          `${label} token response is missing access_token`,
+          undefined,
+          "provider_error",
+        );
+      const { access_token: _accessToken, refresh_token: _refreshToken, ...metadata } = payload;
+      return {
+        accessToken,
+        refreshToken: optionalString(payload.refresh_token),
+        tokenType: optionalString(payload.token_type) ?? "Bearer",
+        expiresAt: expiresAtFromLifetime(payload.expires_in),
+        metadata,
+      };
+    },
+  };
 }
 
 /**
@@ -92,6 +161,7 @@ export function createFeishuProviderModule(input: {
 
   return {
     executors: defineOAuthProviderExecutors(service, handlers),
+    oauth: createFeishuOAuthRuntime(service, cloud),
     credentialValidators: {
       async oauth2(credential, { fetcher, signal }): Promise<CredentialValidationResult> {
         const data = await fetchFeishuUserInfo({
@@ -126,6 +196,7 @@ const feishuModule = createFeishuProviderModule({ service: "feishu", actions: fe
 
 export const executors: ProviderExecutors = feishuModule.executors;
 export const credentialValidators: CredentialValidators = feishuModule.credentialValidators;
+export const oauth: ProviderOAuthRuntime = feishuModule.oauth;
 
 export const proxy: ProviderProxyExecutor = defineProviderProxy(feishuProxyDefinition("feishu", feishuCloud));
 
@@ -135,6 +206,13 @@ export function feishuProxyDefinition(service: string, cloud: FeishuCloud): Prov
     service,
     baseUrl: cloud.openBaseUrl,
     auth: { type: "oauth_bearer" },
+    async readError(response) {
+      const error = await readFeishuErrorResponse(response);
+      return error.code === "quota_exhausted"
+        ? error
+        : new ProviderRequestError(response.status, error.message, error.details);
+    },
+    readResponseError: readFeishuQuotaError,
     skipDnsValidation: true,
     customizeRequest({ headers }) {
       headers.set("accept", "application/json");

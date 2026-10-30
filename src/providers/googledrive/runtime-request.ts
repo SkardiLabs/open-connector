@@ -1,3 +1,4 @@
+import type { ProviderErrorCode } from "../../core/provider-error-codes.ts";
 import type { ProviderFetch } from "../provider-runtime.ts";
 
 import { looseArray, optionalRecord, optionalString } from "../../core/cast.ts";
@@ -6,12 +7,14 @@ import {
   isAbortLikeError,
   providerUserAgent,
   ProviderRequestError,
+  providerInputError,
+  providerResponseError,
+  defaultProviderRequestTimeoutMs,
 } from "../provider-runtime.ts";
 
 export type GoogleQueryValue = string | readonly string[] | undefined;
 
 const defaultService = "googledrive";
-const googleDefaultRequestTimeoutMs = 30_000;
 
 export interface GoogleRequestOptions {
   accessToken: string;
@@ -63,7 +66,7 @@ export async function googleRequest(url: string, input: GoogleRequestOptions): P
   const hasRequestBody = input.rawBody != null || hasJsonBody;
   const method = (input.method ?? (hasRequestBody ? "POST" : "GET")).toUpperCase();
   if ((method === "GET" || method === "HEAD") && hasRequestBody) {
-    throw new ProviderRequestError(400, `${service} ${method} request must not include a body`);
+    throw providerInputError(`${service} ${method} request must not include a body`);
   }
 
   const requestInit: RequestInit = {
@@ -77,7 +80,7 @@ export async function googleRequest(url: string, input: GoogleRequestOptions): P
         : headers,
     ...(input.rawBody != null ? { body: input.rawBody } : hasJsonBody ? { body: JSON.stringify(input.body) } : {}),
   };
-  const timeoutMs = input.timeoutMs ?? googleDefaultRequestTimeoutMs;
+  const timeoutMs = input.timeoutMs ?? defaultProviderRequestTimeoutMs;
   const timeout = createProviderTimeout(input.signal, timeoutMs);
   let response: Response;
   try {
@@ -86,7 +89,7 @@ export async function googleRequest(url: string, input: GoogleRequestOptions): P
     if (timeout.didTimeout() && isAbortLikeError(error)) {
       const timeoutSeconds = Math.max(1, Math.ceil(timeoutMs / 1000));
       const unit = timeoutSeconds === 1 ? "second" : "seconds";
-      throw new ProviderRequestError(502, `${service} request timed out after ${timeoutSeconds} ${unit}`);
+      throw providerResponseError(`${service} request timed out after ${timeoutSeconds} ${unit}`);
     }
     throw error;
   } finally {
@@ -110,10 +113,13 @@ async function assertGoogleResponse(response: Response, service: string): Promis
   throw new ProviderRequestError(response.status, message, details, code);
 }
 
-async function extractGoogleError(
-  response: Response,
-  service: string,
-): Promise<{ message: string; details: unknown; code?: string }> {
+interface GoogleResponseError {
+  message: string;
+  details: unknown;
+  code?: ProviderErrorCode;
+}
+
+async function extractGoogleError(response: Response, service: string): Promise<GoogleResponseError> {
   const rawText = await response.text().catch(() => "");
   if (!rawText) {
     return {
@@ -160,7 +166,7 @@ function isDriveQuotaReason(reason: string | undefined): boolean {
   return driveQuotaReasons.has((reason ?? "").toLowerCase().replace(/[^a-z]/g, ""));
 }
 
-function driveRateLimitCode(error: Record<string, unknown> | undefined): string | undefined {
+function driveRateLimitCode(error: Record<string, unknown> | undefined): ProviderErrorCode | undefined {
   if (!error) {
     return undefined;
   }

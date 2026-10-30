@@ -1,6 +1,6 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { compactObject, optionalRecord, optionalString } from "../../core/cast.ts";
 import {
@@ -10,6 +10,7 @@ import {
   ProviderRequestError,
   readProviderTextBody,
   requiredResponseRecord,
+  providerInputError,
 } from "../provider-runtime.ts";
 
 export const nusiiProposalsApiBaseUrl = "https://app.nusii.com/api/v2/";
@@ -350,7 +351,7 @@ function createNusiiError(status: number, payload: unknown, phase: NusiiProposal
     return new ProviderRequestError(429, message);
   }
   if (phase === "validate" && (status === 401 || status === 403)) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   if (phase === "execute" && status === 401) {
     return new ProviderRequestError(401, message);

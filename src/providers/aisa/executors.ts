@@ -1,15 +1,14 @@
 import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
-import type { ApiKeyProviderContext, ProviderActionHandlers } from "../provider-runtime.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { optionalRecord, optionalString } from "../../core/cast.ts";
-import {
-  defineApiKeyProviderExecutors,
-  defineProviderProxy,
-  providerInputError,
-  ProviderRequestError,
-  runProviderRequest,
-} from "../provider-runtime.ts";
-
+import { readSchemaProperties } from "../../core/json-schema.ts";
+import { randomUUIDv7 } from "../../core/uuid-v7.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { requiredResponseRecord } from "../provider-runtime.ts";
+import { providerInputError, ProviderRequestError, runProviderRequest } from "../provider-runtime.ts";
+import { aisaFirecrawlFamilies } from "./firecrawl-actions.ts";
 const service = "aisa";
 const aisaApiOrigin = "https://api.aisa.one";
 interface AisaActionRoute {
@@ -26,21 +25,20 @@ interface AisaActionRoute {
   fixedQuery?: Record<string, string>;
   omitQueryDefaults?: Record<string, unknown>;
   response?: AisaResponseFormat;
+  bodyDefaults?: Record<string, unknown>;
+  timeoutMs?: number;
+  asyncJob?: "submit" | "get" | "cancel";
 }
-
 interface AisaSemicolonResponse {
   type: "semicolon";
   header: "required" | "optional";
   columns?: readonly string[];
   headerAliases?: readonly (readonly string[])[];
 }
-
 type AisaResponseFormat = AisaSemicolonResponse;
-
 function dataForSeoRoute(path: string, body: Record<string, string>): AisaActionRoute {
   return { path, method: "POST", query: {}, body, bodyArray: true, snakeCaseBody: true };
 }
-
 function dataForSeoLlmRoute(path: string): AisaActionRoute {
   return dataForSeoRoute(path, {
     prompt: "userPrompt",
@@ -58,7 +56,6 @@ function dataForSeoLlmRoute(path: string): AisaActionRoute {
     tag: "tag",
   });
 }
-
 function dataForSeoMentionRoute(path: string): AisaActionRoute {
   return dataForSeoRoute(path, {
     targets: "target",
@@ -72,7 +69,6 @@ function dataForSeoMentionRoute(path: string): AisaActionRoute {
     tag: "tag",
   });
 }
-
 const similarwebMonthQuery = {
   startMonth: "start_date",
   endMonth: "end_date",
@@ -80,7 +76,6 @@ const similarwebMonthQuery = {
   webSource: "web_source",
   mainDomainOnly: "main_domain_only",
 };
-
 const similarwebRowsQuery = {
   domain: "domain",
   ...similarwebMonthQuery,
@@ -88,8 +83,153 @@ const similarwebRowsQuery = {
   offset: "offset",
   trafficSource: "traffic_source",
 };
-
 const aisaActionRoutes: Record<string, AisaActionRoute> = {
+  ...Object.fromEntries(
+    aisaFirecrawlFamilies.flatMap((family) => {
+      const base = `/apis/v1/firecrawl/${family.path}`;
+      return [
+        [
+          `submit_firecrawl_${family.name}`,
+          {
+            path: base,
+            method: "POST",
+            query: {},
+            asyncJob: "submit",
+            body: Object.fromEntries(
+              Object.keys(readSchemaProperties(family.inputSchema))
+                .filter((key) => key !== "maxPriceUsd")
+                .map((key) => [key, key]),
+            ),
+          },
+        ],
+        [
+          `get_firecrawl_${family.name}`,
+          {
+            path: `${base}/{taskId}`,
+            query: {},
+            pathParams: { taskId: "taskId" },
+            asyncJob: "get",
+          },
+        ],
+        [
+          `cancel_firecrawl_${family.name}`,
+          {
+            path: `${base}/{taskId}/cancel`,
+            method: "POST",
+            query: {},
+            pathParams: { taskId: "taskId" },
+            asyncJob: "cancel",
+          },
+        ],
+      ] as Array<[string, AisaActionRoute]>;
+    }),
+  ),
+  search_exa: {
+    path: "/apis/v1/exa/search",
+    method: "POST",
+    query: {},
+    timeoutMs: 180000,
+    body: {
+      query: "query",
+      stream: "stream",
+      type: "type",
+      numResults: "numResults",
+      category: "category",
+      includeDomains: "includeDomains",
+      excludeDomains: "excludeDomains",
+      startPublishedDate: "startPublishedDate",
+      endPublishedDate: "endPublishedDate",
+      contents: "contents",
+      outputSchema: "outputSchema",
+      systemPrompt: "systemPrompt",
+    },
+  },
+  get_exa_contents: {
+    path: "/apis/v1/exa/contents",
+    method: "POST",
+    query: {},
+    timeoutMs: 180000,
+    bodyDefaults: { text: true },
+    body: {
+      urls: "ids",
+      stream: "stream",
+      text: "text",
+      highlights: "highlights",
+      summary: "summary",
+      livecrawl: "livecrawl",
+      subpages: "subpages",
+    },
+  },
+  answer_exa: {
+    path: "/apis/v1/exa/answer",
+    method: "POST",
+    query: {},
+    timeoutMs: 180000,
+    body: {
+      query: "query",
+      type: "type",
+      stream: "stream",
+      text: "text",
+      outputSchema: "outputSchema",
+    },
+  },
+  scrape_firecrawl: {
+    path: "/apis/v1/firecrawl/scrape",
+    method: "POST",
+    query: {},
+    timeoutMs: 180000,
+    body: { url: "url" },
+    bodyDefaults: { proxy: "basic", formats: ["markdown"], onlyCleanContent: false },
+  },
+  map_firecrawl: {
+    path: "/apis/v1/firecrawl/map",
+    method: "POST",
+    query: {},
+    timeoutMs: 180000,
+    body: { url: "url", limit: "limit" },
+  },
+  crawl_tavily: {
+    path: "/apis/v1/tavily/crawl",
+    method: "POST",
+    query: {},
+    timeoutMs: 180000,
+    body: {
+      url: "url",
+      limit: "limit",
+      maxDepth: "max_depth",
+      maxBreadth: "max_breadth",
+      instructions: "instructions",
+      selectPaths: "select_paths",
+      excludePaths: "exclude_paths",
+      selectDomains: "select_domains",
+      excludeDomains: "exclude_domains",
+      allowExternal: "allow_external",
+      chunksPerSource: "chunks_per_source",
+      extractDepth: "extract_depth",
+      format: "format",
+      includeFavicon: "include_favicon",
+      includeImages: "include_images",
+      includeUsage: "include_usage",
+      timeout: "timeout",
+    },
+  },
+  extract_tavily: {
+    path: "/apis/v1/tavily/extract",
+    method: "POST",
+    query: {},
+    timeoutMs: 90000,
+    body: {
+      urls: "urls",
+      query: "query",
+      chunksPerSource: "chunks_per_source",
+      extractDepth: "extract_depth",
+      format: "format",
+      includeFavicon: "include_favicon",
+      includeImages: "include_images",
+      includeUsage: "include_usage",
+      timeout: "timeout",
+    },
+  },
   get_credits_balance: { path: "/v1/credits/balance", query: {} },
   get_usage: {
     path: "/v1/usage",
@@ -99,6 +239,16 @@ const aisaActionRoutes: Record<string, AisaActionRoute> = {
   query_dataforseo_claude: dataForSeoLlmRoute("/apis/v1/dataforseo/ai_optimization/claude/llm_responses/live"),
   query_dataforseo_gemini: dataForSeoLlmRoute("/apis/v1/dataforseo/ai_optimization/gemini/llm_responses/live"),
   query_dataforseo_perplexity: dataForSeoLlmRoute("/apis/v1/dataforseo/ai_optimization/perplexity/llm_responses/live"),
+  get_dataforseo_keyword_trends: dataForSeoRoute("/apis/v1/dataforseo/keywords_data/dataforseo_trends/explore/live", {
+    keywords: "keywords",
+    locationName: "locationName",
+    locationCode: "locationCode",
+    type: "type",
+    dateFrom: "dateFrom",
+    dateTo: "dateTo",
+    timeRange: "timeRange",
+    tag: "tag",
+  }),
   get_dataforseo_ai_keyword_volume: dataForSeoRoute(
     "/apis/v1/dataforseo/ai_optimization/ai_keyword_data/keywords_search_volume/live",
     {
@@ -823,7 +973,6 @@ const aisaActionRoutes: Record<string, AisaActionRoute> = {
     },
   },
 };
-
 function buildAisaPath(path: string, input: Record<string, unknown>, pathParams: Record<string, string> | undefined) {
   let resolved = path;
   for (const [placeholder, inputName] of Object.entries(pathParams ?? {})) {
@@ -835,20 +984,21 @@ function buildAisaPath(path: string, input: Record<string, unknown>, pathParams:
   }
   return resolved;
 }
-
 function buildAisaBody(input: Record<string, unknown>, route: AisaActionRoute) {
   if (!route.body) {
     return undefined;
   }
-  const body = Object.fromEntries(
-    Object.entries(route.body)
-      .filter(([inputName]) => input[inputName] !== undefined)
-      .map(([inputName, bodyName]) => [bodyName, input[inputName]]),
-  );
+  const body = {
+    ...route.bodyDefaults,
+    ...Object.fromEntries(
+      Object.entries(route.body)
+        .filter(([inputName]) => input[inputName] !== undefined)
+        .map(([inputName, bodyName]) => [bodyName, input[inputName]]),
+    ),
+  };
   const normalized = route.snakeCaseBody ? toSnakeCaseJson(body, route.bodyKeyAliases) : body;
   return route.bodyArray ? [normalized] : normalized;
 }
-
 function toSnakeCaseJson(value: unknown, keyAliases: Record<string, string> = {}): unknown {
   if (Array.isArray(value)) {
     return value.map((item) => toSnakeCaseJson(item, keyAliases));
@@ -864,7 +1014,6 @@ function toSnakeCaseJson(value: unknown, keyAliases: Record<string, string> = {}
     ]),
   );
 }
-
 function camelToSnakeCase(value: string) {
   let output = "";
   for (const character of value) {
@@ -873,7 +1022,6 @@ function camelToSnakeCase(value: string) {
   }
   return output;
 }
-
 function buildAisaQuery(
   input: Record<string, unknown>,
   mapping: Record<string, string | readonly string[]>,
@@ -919,17 +1067,22 @@ function buildAisaQuery(
   }
   return query;
 }
-
 type Handler = (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>;
-
-const handlers = Object.fromEntries(
+const handlers: Record<string, Handler> = Object.fromEntries(
   Object.entries(aisaActionRoutes).map(([name, route]) => [
     name,
-    (input: Record<string, unknown>, context: ApiKeyProviderContext) =>
-      requestAisa(
-        buildAisaPath(route.path, input, route.pathParams),
+    async (input, context) => {
+      const normalized = normalizeFirecrawlInput(name, input);
+      const headers: Record<string, string> = {};
+      if (route.asyncJob === "submit") {
+        headers["Idempotency-Key"] = randomUUIDv7();
+        const maxPriceUsd = optionalString(normalized.maxPriceUsd);
+        if (maxPriceUsd !== undefined) headers["X-AISA-Max-Price-USD"] = maxPriceUsd;
+      }
+      const payload = await requestAisa(
+        buildAisaPath(route.path, normalized, route.pathParams),
         buildAisaQuery(
-          input,
+          normalized,
           route.query,
           route.commaSeparated ?? [],
           route.joined ?? {},
@@ -938,17 +1091,28 @@ const handlers = Object.fromEntries(
         ),
         context,
         route.method ?? "GET",
-        buildAisaBody(input, route),
+        buildAisaBody(normalized, route),
         "execute",
         route.response,
-      ),
+        route.timeoutMs,
+        headers,
+      );
+      if (!route.asyncJob) return payload;
+      const job = requiredResponseRecord(payload, "AIsa job");
+      const id = optionalString(job.id);
+      if (!id || (route.asyncJob !== "submit" && !optionalString(job.status)))
+        throw new ProviderRequestError(502, "AIsa returned an invalid job handle or state");
+      if (route.asyncJob !== "submit" && id !== normalized.taskId)
+        throw new ProviderRequestError(502, "AIsa returned a different job");
+      if (route.asyncJob === "submit") return { taskId: id };
+      const { id: _id, object: _object, ...result } = job;
+      return { ...result, taskId: id };
+    },
   ]),
-) as ProviderActionHandlers<"aisa", Handler>;
-
+);
 export const executors: ProviderExecutors = defineApiKeyProviderExecutors(service, handlers, {
   skipDnsValidation: true,
 });
-
 export const proxy: ProviderProxyExecutor = defineProviderProxy({
   service,
   baseUrl: aisaApiOrigin,
@@ -958,7 +1122,6 @@ export const proxy: ProviderProxyExecutor = defineProviderProxy({
   },
   skipDnsValidation: true,
 });
-
 export const credentialValidators: CredentialValidators = {
   async apiKey(input, { fetcher, signal }) {
     const payload = optionalRecord(
@@ -979,7 +1142,6 @@ export const credentialValidators: CredentialValidators = {
     };
   },
 };
-
 async function requestAisa(
   path: string,
   query: URLSearchParams,
@@ -988,11 +1150,14 @@ async function requestAisa(
   body: unknown,
   phase: "validate" | "execute" = "execute",
   responseFormat?: AisaResponseFormat,
+  timeoutMs?: number,
+  extraHeaders?: Record<string, string>,
 ): Promise<unknown> {
-  return runProviderRequest({ signal: context.signal, label: "AIsa" }, async (signal) => {
+  return runProviderRequest({ signal: context.signal, label: "AIsa", timeoutMs }, async (signal) => {
     const url = new URL(path, aisaApiOrigin);
     url.search = query.toString();
     const headers = new Headers({
+      ...extraHeaders,
       accept: responseFormat ? "text/plain, application/json;q=0.9" : "application/json",
       authorization: `Bearer ${context.apiKey}`,
     });
@@ -1008,7 +1173,6 @@ async function requestAisa(
     return payload;
   });
 }
-
 async function readAisaPayload(response: Response, responseFormat: AisaResponseFormat | undefined) {
   const text = await response.text();
   if (text.trim() === "") {
@@ -1026,7 +1190,6 @@ async function readAisaPayload(response: Response, responseFormat: AisaResponseF
     throw new ProviderRequestError(502, "AIsa returned invalid JSON");
   }
 }
-
 function createSemicolonOutput(rawText: string, responseFormat: AisaSemicolonResponse) {
   const records = isEmptySemrushReport(rawText) ? [] : parseSemicolonRecords(rawText);
   const columns = responseFormat.header === "required" ? (records.shift() ?? []) : [...(responseFormat.columns ?? [])];
@@ -1040,7 +1203,6 @@ function createSemicolonOutput(rawText: string, responseFormat: AisaSemicolonRes
   }
   return { rawText, columns, rows: records };
 }
-
 function isEmptySemrushReport(rawText: string): boolean {
   const message = rawText.trim();
   if (!message.startsWith("ERROR ")) {
@@ -1053,14 +1215,12 @@ function isEmptySemrushReport(rawText: string): boolean {
   const detail = separatorIndex === -1 ? message : message.slice(separatorIndex + 4).trim();
   throw new ProviderRequestError(502, code ? `Semrush error ${code}: ${detail}` : `Semrush error: ${detail}`);
 }
-
 function columnsMatch(values: readonly string[], columns: readonly string[]) {
   return (
     values.length === columns.length &&
     values.every((value, index) => normalizeColumnName(value) === normalizeColumnName(columns[index]!))
   );
 }
-
 function normalizeColumnName(value: string) {
   let output = "";
   for (const character of value.toLowerCase()) {
@@ -1071,13 +1231,11 @@ function normalizeColumnName(value: string) {
   }
   return output;
 }
-
 function parseSemicolonRecords(text: string) {
   const records: string[][] = [];
   let record: string[] = [];
   let field = "";
   let quoted = false;
-
   const commitField = () => {
     record.push(field);
     field = "";
@@ -1087,7 +1245,6 @@ function parseSemicolonRecords(text: string) {
     records.push(record);
     record = [];
   };
-
   for (let index = 0; index < text.length; index += 1) {
     const character = text[index]!;
     if (quoted) {
@@ -1103,7 +1260,6 @@ function parseSemicolonRecords(text: string) {
       quoted = false;
       continue;
     }
-
     if (character === '"' && field === "") {
       quoted = true;
     } else if (character === ";") {
@@ -1115,7 +1271,6 @@ function parseSemicolonRecords(text: string) {
     }
   }
   commitRecord();
-
   while (records.length > 0 && records.at(-1)?.every((value) => value === "")) {
     records.pop();
   }
@@ -1124,7 +1279,6 @@ function parseSemicolonRecords(text: string) {
   }
   return records;
 }
-
 function createAisaError(response: Response, payload: unknown, phase: "validate" | "execute"): ProviderRequestError {
   const errorValue = optionalRecord(payload)?.error;
   const error = optionalRecord(errorValue);
@@ -1145,7 +1299,63 @@ function createAisaError(response: Response, payload: unknown, phase: "validate"
   }
   return new ProviderRequestError(response.status, message, payload);
 }
-
 function isCredentialErrorCode(code: string | undefined): boolean {
   return code === "missing_api_key" || code === "invalid_api_key" || code === "revoked_api_key";
+}
+function normalizeFirecrawlInput(name: string, input: Record<string, unknown>): Record<string, unknown> {
+  if (!name.includes("firecrawl")) return input;
+  const normalized = { ...input };
+  const submission = name.startsWith("submit_");
+  const validateUrl = (value: unknown): string => {
+    const text = String(value).trim();
+    const url = URL.parse(text);
+    if (
+      !url ||
+      url.protocol !== "https:" ||
+      !url.hostname ||
+      ((submission || name === "scrape_firecrawl") && url.pathname.toLowerCase().endsWith(".pdf")) ||
+      (submission && (url.username || url.password || url.hash))
+    )
+      throw providerInputError("Firecrawl requires an HTTPS URL without credentials, fragment or PDF suffix");
+    return text;
+  };
+  if (input.url !== undefined) normalized.url = validateUrl(input.url);
+  if (!submission) return normalized;
+  if (Array.isArray(input.urls)) {
+    const urls = input.urls.map(validateUrl);
+    const unique = urls.map((value) => {
+      while (value.endsWith("/")) value = value.slice(0, -1);
+      return value;
+    });
+    if (new Set(unique).size !== urls.length)
+      throw providerInputError("URLs must be unique after trimming whitespace and trailing slashes");
+    normalized.urls = urls;
+  }
+  if (input.maxPriceUsd !== undefined) {
+    const amount = String(input.maxPriceUsd).trim();
+    if (!amount || !Number.isFinite(Number(amount)) || Number(amount) < 0)
+      throw providerInputError("Expected a non-negative USD amount");
+    normalized.maxPriceUsd = amount;
+  }
+  const normalizeSelectors = (value: Record<string, unknown>): Record<string, unknown> => {
+    const output = { ...value };
+    for (const [field, limit] of [
+      ["includeTags", 128],
+      ["excludeTags", 128],
+      ["includePaths", 256],
+      ["excludePaths", 256],
+    ] as const) {
+      if (!Array.isArray(value[field])) continue;
+      output[field] = value[field].map((entry: unknown) => {
+        const text = String(entry).trim();
+        if (!text || Buffer.byteLength(text) > limit || text.includes("\r") || text.includes("\n"))
+          throw providerInputError(`${field} entries must fit ${limit} UTF-8 bytes and contain no newlines`);
+        return text;
+      });
+    }
+    return output;
+  };
+  if (optionalRecord(input.scrapeOptions))
+    normalized.scrapeOptions = normalizeSelectors(optionalRecord(input.scrapeOptions)!);
+  return normalizeSelectors(normalized);
 }

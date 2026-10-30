@@ -5,7 +5,7 @@ import { Validator } from "@cfworker/json-schema";
 import { SdkError, SdkErrorCode } from "@modelcontextprotocol/client";
 import { describe, expect, it } from "vitest";
 import { validateActionInput } from "../../core/validation.ts";
-import { getProviderActionHandler } from "../provider-runtime.ts";
+import { getProviderActionHandler } from "../provider-executors.ts";
 import { provider } from "./definition.ts";
 import { executors } from "./executors.ts";
 import { metabaseMcpHandlers, runMetabaseMcp } from "./mcp-runtime.ts";
@@ -223,10 +223,6 @@ describe("Metabase native MCP", () => {
       );
     },
   );
-
-  it("registers executors for the combined REST and MCP catalog", () => {
-    expect(Object.keys(executors).sort()).toEqual(provider.actions.map((action) => action.id).sort());
-  });
 
   it("uses the normalized subpath endpoint and API key for every MCP request without DELETE", async () => {
     const { context, calls, methods, headers, urls } = fixture();

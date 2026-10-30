@@ -1,5 +1,5 @@
 import type { CredentialValidationResult, ProviderExecutors } from "../../core/types.ts";
-import type { ApiKeyProviderContext, ProviderActionHandlers, ProviderActionSources } from "../provider-runtime.ts";
+import type { ApiKeyProviderContext, ProviderActionHandlers, ProviderActionSources } from "../provider-executors.ts";
 
 import {
   compactObject,
@@ -9,9 +9,8 @@ import {
   requiredRecord,
   requiredString,
 } from "../../core/cast.ts";
+import { defineApiKeyProviderExecutors, mapProviderActionSources } from "../provider-executors.ts";
 import {
-  defineApiKeyProviderExecutors,
-  mapProviderActionSources,
   providerInputError,
   ProviderRequestError,
   providerResponseError,
@@ -76,10 +75,8 @@ const operations: ProviderActionSources<"pipedrive", Operation> = {
 };
 
 export const pipedriveActionHandlers: ProviderActionHandlers<"pipedrive", PipedriveActionHandler> =
-  mapProviderActionSources(
-    service,
-    operations,
-    (_name, operation): PipedriveActionHandler => executeOperation(operation),
+  mapProviderActionSources(service, operations, (_name, operation): PipedriveActionHandler =>
+    executeOperation(operation),
   );
 
 export const executors: ProviderExecutors = defineApiKeyProviderExecutors(service, pipedriveActionHandlers);

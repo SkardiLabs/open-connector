@@ -1,11 +1,11 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
-import type { BearerProviderContext, ProviderRuntimeHandler } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { BearerProviderContext, ProviderRuntimeHandler } from "../provider-executors.ts";
 import type { CloudflareCurrentUser } from "./runtime-user.ts";
 
 import { compactObject, optionalBoolean, optionalInteger, optionalRecord, optionalString } from "../../core/cast.ts";
 import { queryParams } from "../../core/request.ts";
-import { ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import { ProviderRequestError, providerUserAgent, providerInputError } from "../provider-runtime.ts";
 import { readCloudflareCurrentUser } from "./runtime-user.ts";
 
 interface CloudflareEnvelope {
@@ -399,7 +399,7 @@ function normalizeCloudflareError(
     return new ProviderRequestError(429, message);
   }
   if (phase === "validate" && [400, 401, 403, 404].includes(response.status)) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   if (phase === "execute" && (response.status === 400 || response.status === 404)) {
     return new ProviderRequestError(response.status, message);

@@ -1,6 +1,7 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
-import type { ApiKeyProviderContext, ProviderFetch, ProviderRuntimeHandler } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-executors.ts";
+import type { ProviderFetch } from "../provider-runtime.ts";
 
 import {
   compactObject,
@@ -19,6 +20,7 @@ import {
   providerUserAgent,
   ProviderRequestError,
   readProviderJsonBody,
+  providerResponseError,
 } from "../provider-runtime.ts";
 
 type AnySearchRequestPhase = "validate" | "execute";
@@ -401,7 +403,7 @@ function createAnySearchMcpToolError(
     return new ProviderRequestError(401, message);
   }
   if (symbol && invalidInputErrorSymbols.has(symbol)) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
 
   const normalized = message.toLowerCase();
@@ -421,9 +423,9 @@ function createAnySearchMcpToolError(
     normalized.includes("must ") ||
     normalized.includes("unsupported content")
   ) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
-  return new ProviderRequestError(502, message);
+  return providerResponseError(message);
 }
 
 function readMcpErrorSymbol(content: string | undefined): string | undefined {

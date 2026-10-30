@@ -1,5 +1,5 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 import type { ProviderFetch } from "../provider-runtime.ts";
 
 import { optionalInteger, optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
@@ -10,11 +10,10 @@ import {
   providerInputError,
   providerUserAgent,
   ProviderRequestError,
+  defaultProviderRequestTimeoutMs,
 } from "../provider-runtime.ts";
 
 export const oomnitzaValidationPath = "/api/v3/assets";
-
-const oomnitzaRequestTimeoutMs = 30_000;
 
 type OomnitzaRequestMode = "validate" | "execute";
 
@@ -134,7 +133,7 @@ export function resolveOomnitzaCredential(apiKey: string, baseUrlInput?: string)
 }
 
 async function requestOomnitzaJson(input: OomnitzaRequestInput): Promise<unknown> {
-  const timeout = createProviderTimeout(input.signal, oomnitzaRequestTimeoutMs);
+  const timeout = createProviderTimeout(input.signal);
   try {
     const response = await input.fetcher(buildOomnitzaUrl(input.baseUrl, input.path, input.query), {
       method: "GET",
@@ -157,7 +156,7 @@ async function requestOomnitzaJson(input: OomnitzaRequestInput): Promise<unknown
     if (timeout.didTimeout() || isAbortLikeError(error)) {
       throw new ProviderRequestError(
         504,
-        `Oomnitza request timed out after ${Math.ceil(oomnitzaRequestTimeoutMs / 1000)} seconds`,
+        `Oomnitza request timed out after ${Math.ceil(defaultProviderRequestTimeoutMs / 1000)} seconds`,
       );
     }
     const message = error instanceof Error && error.message.trim() ? error.message : "request failed";

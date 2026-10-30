@@ -1,20 +1,20 @@
 import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { compactObject, optionalRecord, optionalString } from "../../core/cast.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
 import {
-  defineApiKeyProviderExecutors,
-  defineProviderProxy,
   isAbortLikeError,
   ProviderRequestError,
   providerUserAgent,
   requiredInputString,
+  defaultProviderRequestTimeoutMs,
 } from "../provider-runtime.ts";
 
 const service = "fluxguard";
 const fluxguardApiBaseUrl = "https://api.fluxguard.com";
-const fluxguardDefaultRequestTimeoutMs = 30_000;
 
 type FluxguardPhase = "validate" | "execute";
 type FluxguardActionContext = ApiKeyProviderContext;
@@ -211,7 +211,7 @@ export const credentialValidators: CredentialValidators = {
 };
 
 async function requestFluxguardJson(context: FluxguardActionContext, input: FluxguardRequestInput): Promise<unknown> {
-  const timeoutSignal = AbortSignal.timeout(fluxguardDefaultRequestTimeoutMs);
+  const timeoutSignal = AbortSignal.timeout(defaultProviderRequestTimeoutMs);
   const signal = context.signal ? AbortSignal.any([context.signal, timeoutSignal]) : timeoutSignal;
 
   try {

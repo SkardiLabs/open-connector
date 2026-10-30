@@ -1,6 +1,6 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { optionalBoolean, optionalNumber, optionalRecord, optionalString, stringArray } from "../../core/cast.ts";
 import {
@@ -199,7 +199,7 @@ async function readMailsSoErrorMessage(response: Response): Promise<string> {
 
 function mapMailsSoError(status: number, message: string, phase: MailsSoRequestPhase): ProviderRequestError {
   if (status === 400 || status === 404) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   if (status === 401) {
     if (message.toLowerCase().includes("paid subscription")) {

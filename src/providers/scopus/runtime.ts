@@ -1,5 +1,5 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
 import { compactObject, optionalRecord, optionalString } from "../../core/cast.ts";
 import {
@@ -10,6 +10,8 @@ import {
   readProviderTextBody,
   requiredInputString,
   setSearchParams,
+  providerInputError,
+  providerResponseError,
 } from "../provider-runtime.ts";
 
 export const scopusApiBaseUrl = "https://api.elsevier.com/content";
@@ -325,7 +327,7 @@ function createScopusError(status: number, payload: unknown, phase: ScopusPhase)
     return new ProviderRequestError(429, message);
   }
   if (phase === "validate" && status >= 400 && status < 500) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   if (status === 401 || status === 403) {
     return new ProviderRequestError(status, message);
@@ -333,7 +335,7 @@ function createScopusError(status: number, payload: unknown, phase: ScopusPhase)
   if (status >= 400 && status < 500) {
     return new ProviderRequestError(status, message);
   }
-  return new ProviderRequestError(502, message);
+  return providerResponseError(message);
 }
 
 function extractScopusErrorMessage(payload: unknown): string | undefined {

@@ -1,18 +1,14 @@
 import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { compactObject, optionalInteger, optionalNumber, optionalRecord, optionalString } from "../../core/cast.ts";
-import {
-  defineApiKeyProviderExecutors,
-  defineProviderProxy,
-  providerUserAgent,
-  ProviderRequestError,
-} from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { providerUserAgent, ProviderRequestError, defaultProviderRequestTimeoutMs } from "../provider-runtime.ts";
 
 const service = "float";
 const floatApiBaseUrl = "https://api.float.com/v3";
-const floatDefaultRequestTimeoutMs = 30_000;
 
 type FloatActionContext = ApiKeyProviderContext;
 type FloatActionHandler = (input: Record<string, unknown>, context: FloatActionContext) => Promise<unknown>;
@@ -197,7 +193,7 @@ export const credentialValidators: CredentialValidators = {
 };
 
 async function requestFloatJson(context: FloatActionContext, input: FloatRequestInput): Promise<FloatListResponse> {
-  const timeoutSignal = AbortSignal.timeout(floatDefaultRequestTimeoutMs);
+  const timeoutSignal = AbortSignal.timeout(defaultProviderRequestTimeoutMs);
   const signal = context.signal ? AbortSignal.any([context.signal, timeoutSignal]) : timeoutSignal;
 
   try {

@@ -1,5 +1,5 @@
 import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
 import {
   compactObject,
@@ -9,18 +9,18 @@ import {
   optionalString,
   requiredRecord,
 } from "../../core/cast.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
 import {
-  defineApiKeyProviderExecutors,
-  defineProviderProxy,
   isAbortLikeError,
   providerResponseError,
   providerUserAgent,
   ProviderRequestError,
+  defaultProviderRequestTimeoutMs,
 } from "../provider-runtime.ts";
 
 const service = "circle";
 const apiBaseUrl = "https://app.circle.so/api/admin/v2";
-const requestTimeoutMs = 30_000;
 
 type CirclePhase = "validate" | "execute";
 interface CircleContext {
@@ -163,8 +163,8 @@ async function requestCircleJson(input: {
   query?: Record<string, string | undefined>;
 }): Promise<Record<string, unknown>> {
   const signal = input.context.signal
-    ? AbortSignal.any([input.context.signal, AbortSignal.timeout(requestTimeoutMs)])
-    : AbortSignal.timeout(requestTimeoutMs);
+    ? AbortSignal.any([input.context.signal, AbortSignal.timeout(defaultProviderRequestTimeoutMs)])
+    : AbortSignal.timeout(defaultProviderRequestTimeoutMs);
   let response: Response;
   let payload: unknown;
   try {

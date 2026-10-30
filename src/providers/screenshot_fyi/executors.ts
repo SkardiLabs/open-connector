@@ -4,21 +4,22 @@ import type {
   ProviderExecutors,
   ProviderProxyExecutor,
 } from "../../core/types.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { compactObject, optionalBoolean, optionalInteger, optionalRecord, optionalString } from "../../core/cast.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
 import {
-  defineApiKeyProviderExecutors,
-  defineProviderProxy,
   providerUserAgent,
   ProviderRequestError,
+  providerInputError,
+  defaultProviderRequestTimeoutMs,
 } from "../provider-runtime.ts";
 
 const service = "screenshot_fyi";
 const screenshotFyiApiBaseUrl = "https://www.screenshot.fyi";
 const screenshotFyiCapturePath = "/api/take";
-const screenshotFyiDefaultRequestTimeoutMs = 30_000;
 const screenshotFyiValidationUrl = "https://example.com";
 
 type ScreenshotFyiRequestPhase = "validate" | "execute";
@@ -98,7 +99,7 @@ async function requestScreenshotFyiJson(input: {
   context: Pick<ApiKeyProviderContext, "fetcher" | "signal">;
   phase: ScreenshotFyiRequestPhase;
 }): Promise<unknown> {
-  const timeout = createTimeoutSignal(input.context.signal, screenshotFyiDefaultRequestTimeoutMs);
+  const timeout = createTimeoutSignal(input.context.signal, defaultProviderRequestTimeoutMs);
   try {
     const response = await input.context.fetcher(buildScreenshotFyiUrl(input.apiKey, input.query), {
       method: "GET",
@@ -172,7 +173,7 @@ function createScreenshotFyiError(
   const message =
     extractScreenshotFyiErrorMessage(payload) ?? `screenshot.fyi request failed with status ${response.status}`;
   if (phase === "validate" && response.status >= 400 && response.status < 500) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   return new ProviderRequestError(response.status || 500, message);
 }

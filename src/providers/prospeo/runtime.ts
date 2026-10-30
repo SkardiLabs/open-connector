@@ -1,18 +1,17 @@
 import type { CredentialValidationResult, ProviderExecutors } from "../../core/types.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { compactObject, optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
 import {
-  defineApiKeyProviderExecutors,
   isAbortLikeError,
   ProviderRequestError,
   providerUserAgent,
+  defaultProviderRequestTimeoutMs,
 } from "../provider-runtime.ts";
 
 export const prospeoApiBaseUrl = "https://api.prospeo.io";
-
-const defaultRequestTimeoutMs = 30_000;
 
 type ProspeoMode = "validate" | "execute";
 
@@ -172,7 +171,7 @@ export const executors: ProviderExecutors = defineApiKeyProviderExecutors(
 
 async function requestProspeoJson(input: ProspeoRequestInput, context: ProspeoRequestContext) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), defaultRequestTimeoutMs);
+  const timeout = setTimeout(() => controller.abort(), defaultProviderRequestTimeoutMs);
 
   try {
     const response = await context.fetcher(buildProspeoUrl(input.path), {

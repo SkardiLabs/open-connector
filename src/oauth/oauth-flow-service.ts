@@ -1,4 +1,5 @@
-import type { StoredConnection, ConnectionService } from "../connection-service.ts";
+import type { ConnectionService } from "../connection-service.ts";
+import type { StoredConnection } from "../connection-store.ts";
 import type { OAuth2AuthDefinition } from "../core/types.ts";
 import type { IProviderLoader } from "../providers/provider-loader.ts";
 import type { SaasOAuthService } from "../saas/saas-oauth-service.ts";
@@ -16,7 +17,8 @@ import type {
 import type { OAuthTokenResult } from "./oauth-token.ts";
 
 import { createHash, randomBytes } from "node:crypto";
-import { ConnectionError, normalizeConnectionName } from "../connection-service.ts";
+import { ConnectionError } from "../connection-error.ts";
+import { normalizeConnectionName } from "../connection-service.ts";
 import {
   providerFetch,
   ProviderDispatchRequestError,
@@ -43,6 +45,7 @@ export interface OAuthAuthorizationCompleteInput {
   state: string;
   code: string;
   callbackParameters?: Record<string, string>;
+  callbackQuery?: string;
   signal?: AbortSignal;
 }
 
@@ -203,7 +206,7 @@ export class OAuthFlowService {
    * Ends a runtime authorization (`POST /api/oauth/authorizations`) that the
    * provider refused, so a later callback for the same state cannot complete
    * it. Returns false when no such authorization was pending (unknown, or
-   * already completed by another callback), so nothing is claimed about it.
+   * already completed or refused by another callback).
    */
   async discardAuthorization(state: string): Promise<boolean> {
     return (await this.states.take(state)) !== undefined;
@@ -318,6 +321,9 @@ export class OAuthFlowService {
           if (providerOAuth?.exchangeCode) {
             return providerOAuth.exchangeCode({
               code: input.code,
+              codeVerifier: pending.pkceCodeVerifier,
+              state: pending.state,
+              callbackQuery: input.callbackQuery,
               callbackParameters: input.callbackParameters,
               clientConfig: config,
               redirectUri,

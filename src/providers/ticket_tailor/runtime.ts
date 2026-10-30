@@ -1,5 +1,6 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ApiKeyProviderContext, ProviderActionHandlers, ProviderFetch } from "../provider-runtime.ts";
+import type { ApiKeyProviderContext, ProviderActionHandlers } from "../provider-executors.ts";
+import type { ProviderFetch } from "../provider-runtime.ts";
 
 import { compactObject, optionalInteger, optionalRecord, optionalString } from "../../core/cast.ts";
 import { readProviderTextBody } from "../provider-runtime.ts";
@@ -177,7 +178,6 @@ function createError(response: Response, payload: unknown): ProviderRequestError
     response.status || 502,
     code ? `[${code}] ${upstreamMessage}` : upstreamMessage,
     payload,
-    code,
   );
 }
 function requireArray(value: unknown, label: string): unknown[] {

@@ -55,8 +55,10 @@ layouts do not expose this package's own copy for a direct host import. On Bun,
 pass the same `fetch` handler to `Bun.serve()` and skip `@hono/node-server`.
 
 Importing the package starts nothing. Configuration is explicit; the library
-does not read environment variables. One runtime may be active per process
-because provider egress policy is process-wide. Keep administrator credentials
+does not read environment variables. Multiple runtimes may share a process; each
+owns its network policy and background tasks. Use separate data directories and
+database namespaces for independent tenants. Closing one runtime does not change
+another runtime’s network policy. Keep administrator credentials
 in your backend and authorize users before making management calls.
 
 `publicOrigin` is the external HTTP(S) URL of the runtime. A path such as
@@ -68,20 +70,21 @@ original request URL when you forward.
 
 `createConnectorRuntime(options)`:
 
-| Option          | Purpose                                                                                         |
-| --------------- | ----------------------------------------------------------------------------------------------- |
-| `dataDir`       | Writable directory for SQLite, local transit files, and upload staging. Required.               |
-| `publicOrigin`  | External HTTP(S) URL. A path is a mount prefix. Required.                                       |
-| `encryptionKey` | Encrypts stored credentials and OAuth state. Omit to store them in plain text.                  |
-| `adminToken`    | Bearer token for management APIs. Omit to leave them open.                                      |
-| `runtimeToken`  | Static bearer token for `/v1` and `/mcp`. JWT and admin-issued tokens are alternatives.         |
-| `jwt`           | `{ jwksUri, issuer, audience }` to verify `/v1` bearer tokens as JWTs.                          |
-| `postgres`      | `{ connectionString }` to use PostgreSQL instead of SQLite under `dataDir`.                     |
-| `actionPolicy`  | Allow or block actions and proxies by name (`service.*` and `*` are accepted).                  |
-| `transitFiles`  | TTL, size limit, and optional S3 for files exchanged with providers.                            |
-| `network`       | Private-network and trusted-host egress policy. Process-wide.                                   |
-| `apiReference`  | Serve `/docs` API-reference HTML. Off by default. Authorization completion pages are always on. |
-| `logger`        | `{ error, info, warn }`. Omit for silence.                                                      |
+| Option                   | Purpose                                                                                                              |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------- |
+| `dataDir`                | Writable directory for SQLite, local transit files, and upload staging. Required.                                    |
+| `publicOrigin`           | External HTTP(S) URL. A path is a mount prefix. Required.                                                            |
+| `encryptionKey`          | Encrypts stored credentials and OAuth state. Omit to store them in plain text.                                       |
+| `adminToken`             | Bearer token for management APIs. Omit to leave them open.                                                           |
+| `runtimeToken`           | Static bearer token for `/v1` and `/mcp`. JWT and admin-issued tokens are alternatives.                              |
+| `jwt`                    | `{ jwksUri, issuer, audience }` to verify `/v1` bearer tokens as JWTs.                                               |
+| `postgres`               | `{ connectionString }` to use PostgreSQL instead of SQLite under `dataDir`.                                          |
+| `actionPolicy`           | Allow or block actions and proxies by name (`service.*` and `*` are accepted).                                       |
+| `transitFiles`           | TTL, size limit, and optional S3 for files exchanged with providers.                                                 |
+| `network`                | Private-network and trusted-host egress policy. Process-wide.                                                        |
+| `apiReference`           | Serve `/docs` API-reference HTML. Off by default. Authorization completion pages are always on.                      |
+| `oauthCloseDelaySeconds` | Seconds the OAuth completion page waits before closing its window. Defaults to 5; `0` closes it as soon as it loads. |
+| `logger`                 | `{ error, info, warn }`. Omit for silence.                                                                           |
 
 `connector.fetch(request)` is the HTTP boundary: `/v1/*`, `/mcp`,
 `/oauth/callback`, and admin `/api/*`. `connector.close()` aborts in-flight

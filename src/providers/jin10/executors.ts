@@ -1,6 +1,6 @@
 import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 import type { Jin10ActionName } from "./actions.ts";
 import type { Client } from "@modelcontextprotocol/client";
 
@@ -9,18 +9,14 @@ import { SdkHttpError } from "@modelcontextprotocol/client";
 import { ProtocolError } from "@modelcontextprotocol/client";
 import { createHash } from "node:crypto";
 import { withMcpClient } from "../mcp-client.ts";
-import {
-  defineApiKeyProviderExecutors,
-  defineProviderProxy,
-  providerUserAgent,
-  ProviderRequestError,
-} from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { providerUserAgent, ProviderRequestError, defaultProviderRequestTimeoutMs } from "../provider-runtime.ts";
 
 const service = "jin10";
 const jin10McpOrigin = "https://mcp.jin10.com";
 const jin10McpEndpoint = "https://mcp.jin10.com/mcp";
 const jin10QuoteCodesResourceUri = "quote://codes";
-const jin10RequestTimeoutMs = 30_000;
 
 type Jin10ActionContext = Pick<ApiKeyProviderContext, "apiKey" | "fetcher" | "signal">;
 type Jin10ActionHandler = (input: Record<string, unknown>, context: Jin10ActionContext) => Promise<unknown>;
@@ -105,7 +101,7 @@ async function listJin10McpTools(input: {
     const result = await client.listTools(
       {},
       {
-        timeout: jin10RequestTimeoutMs,
+        timeout: defaultProviderRequestTimeoutMs,
       },
     );
     return result.tools.map((tool) => ({
@@ -127,7 +123,7 @@ async function callJin10McpTool(
         arguments: argumentsInput,
       },
       {
-        timeout: jin10RequestTimeoutMs,
+        timeout: defaultProviderRequestTimeoutMs,
       },
     );
     return normalizeJin10McpToolResult(toolName, result);
@@ -141,7 +137,7 @@ async function readJin10QuoteCodes(context: Jin10ActionContext): Promise<unknown
         uri: jin10QuoteCodesResourceUri,
       },
       {
-        timeout: jin10RequestTimeoutMs,
+        timeout: defaultProviderRequestTimeoutMs,
       },
     );
     const content = result.contents[0];

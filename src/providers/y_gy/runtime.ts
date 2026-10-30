@@ -1,6 +1,6 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
-import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-executors.ts";
 
 import { compactObject, optionalBoolean, optionalInteger, optionalRecord, optionalString } from "../../core/cast.ts";
 import {
@@ -9,6 +9,7 @@ import {
   providerUserAgent,
   ProviderRequestError,
   readProviderTextBody,
+  providerInputError,
 } from "../provider-runtime.ts";
 
 export const yGyApiBaseUrl = "https://api.y.gy/api/v1";
@@ -259,7 +260,7 @@ function createYGyError(
     return new ProviderRequestError(status, message);
   }
   if (status === 400 || status === 409 || status === 422 || (status === 404 && notFoundAsInvalidInput)) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   return new ProviderRequestError(status || 502, message);
 }

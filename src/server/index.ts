@@ -9,7 +9,7 @@ import { defaultLazySchemaCacheFiles } from "../catalog-lazy-schemas.ts";
 import { parseActionPolicyList } from "../core/action-policy.ts";
 import { parseEgressTrustedHosts, parsePrivateNetworkAccessFlag } from "../core/request.ts";
 import { isConsoleShellRequest } from "./api/console-paths.ts";
-import { parseOAuthResultOrigins } from "./api/oauth-completion-page.ts";
+import { DEFAULT_OAUTH_CLOSE_DELAY_SECONDS, parseOAuthResultOrigins } from "./api/oauth-completion-page.ts";
 import { registerStaticRoutes } from "./api/static-routes.ts";
 import { createConnectorRuntime } from "./connector-runtime.ts";
 import { logger } from "./logger.ts";
@@ -31,6 +31,10 @@ const runLimit = readPositiveIntegerEnv("OOMOL_CONNECT_RUN_LIMIT", DEFAULT_RUN_L
 const databaseUrl = optionalEnv("OOMOL_CONNECT_DATABASE_URL");
 const databasePoolMax = readPositiveIntegerEnv("OOMOL_CONNECT_DATABASE_POOL_MAX", 10);
 const databaseConnectTimeoutMs = readPositiveIntegerEnv("OOMOL_CONNECT_DATABASE_CONNECT_TIMEOUT_MS", 10_000);
+const oauthCloseDelaySeconds = readNonNegativeIntegerEnv(
+  "OOMOL_CONNECT_OAUTH_CLOSE_DELAY_SECONDS",
+  DEFAULT_OAUTH_CLOSE_DELAY_SECONDS,
+);
 
 // The standalone binary embeds migrations/postgresql, but the PostgreSQL startup validator refuses to serve until
 // they are applied and its error text points at `npm run runtime:migrate`, which a binary user does not have.
@@ -72,6 +76,7 @@ async function main(): Promise<void> {
     encryptionKey: process.env.OOMOL_CONNECT_ENCRYPTION_KEY,
     adminToken: optionalEnv("OOMOL_CONNECT_ADMIN_TOKEN"),
     runtimeToken: optionalEnv("OOMOL_CONNECT_RUNTIME_TOKEN"),
+    eventVerifyToken: optionalEnv("OOMOL_CONNECT_EVENT_VERIFY_TOKEN"),
     jwt: {
       jwksUri: process.env.OOMOL_CONNECT_JWKS_URI,
       issuer: process.env.OOMOL_CONNECT_JWT_ISSUER,
@@ -100,9 +105,13 @@ async function main(): Promise<void> {
       : undefined,
     transitFiles: readTransitFileOptions(),
     runLimit,
-    lazySchemas: parseBooleanEnv("OOMOL_CONNECT_CATALOG_LAZY_SCHEMAS"),
+    lazySchemas:
+      optionalEnv("OOMOL_CONNECT_CATALOG_LAZY_SCHEMAS") === undefined
+        ? true
+        : parseBooleanEnv("OOMOL_CONNECT_CATALOG_LAZY_SCHEMAS"),
     schemaCacheFiles: readPositiveIntegerEnv("OOMOL_CONNECT_CATALOG_SCHEMA_CACHE_FILES", defaultLazySchemaCacheFiles),
     apiReference: true,
+    oauthCloseDelaySeconds,
     logger,
   });
 
@@ -219,6 +228,16 @@ function readPositiveIntegerEnv(name: string, fallback: number): number {
 
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function readNonNegativeIntegerEnv(name: string, fallback: number): number {
+  const value = optionalEnv(name);
+  if (value === undefined) {
+    return fallback;
+  }
+
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
 function readTransitFileOptions(): ConnectorTransitFileOptions {

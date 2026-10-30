@@ -1,6 +1,6 @@
 import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import {
   compactObject,
@@ -10,19 +10,19 @@ import {
   rawStringOrNull,
   requiredString,
 } from "../../core/cast.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
 import {
-  defineApiKeyProviderExecutors,
-  defineProviderProxy,
   isAbortLikeError,
   providerInputError,
   providerUserAgent,
   ProviderRequestError,
   requiredResponseRecord,
+  defaultProviderRequestTimeoutMs,
 } from "../provider-runtime.ts";
 
 const service = "haveibeenpwned";
 const haveibeenpwnedApiBaseUrl = "https://haveibeenpwned.com/api/v3";
-const haveibeenpwnedDefaultRequestTimeoutMs = 30_000;
 
 type HaveIBeenPwnedRequestPhase = "validate" | "execute";
 type HaveIBeenPwnedActionContext = ApiKeyProviderContext;
@@ -247,7 +247,7 @@ async function requestHaveIBeenPwnedJson(input: {
   signal?: AbortSignal;
   query?: Record<string, string | undefined>;
 }): Promise<unknown> {
-  const timeoutSignal = AbortSignal.timeout(haveibeenpwnedDefaultRequestTimeoutMs);
+  const timeoutSignal = AbortSignal.timeout(defaultProviderRequestTimeoutMs);
   const signal = input.signal ? AbortSignal.any([input.signal, timeoutSignal]) : timeoutSignal;
 
   try {

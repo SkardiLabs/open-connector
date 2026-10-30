@@ -1,6 +1,8 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ProviderActionHandlerSubset } from "../provider-runtime.ts";
-import type { ApiKeyProviderContext, ProviderFetch, ProviderTransitFile } from "../provider-runtime.ts";
+import type { ProviderActionHandlerSubset } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
+import type { ProviderTransitFile } from "../provider-files.ts";
+import type { ProviderFetch } from "../provider-runtime.ts";
 
 import { Buffer } from "node:buffer";
 import {
@@ -15,14 +17,14 @@ import {
   requiredRecord,
   requiredString,
 } from "../../core/cast.ts";
-import { readBoundedResponseBytes } from "../../core/request.ts";
+import { storeResponseInTransit } from "../../core/request.ts";
+import { readTransitFileInput } from "../provider-files.ts";
 import {
   providerInputError,
   ProviderRequestError,
   providerResponseError,
   providerUserAgent,
   readProviderJsonBody,
-  readTransitFileInput,
   requiredInputString,
 } from "../provider-runtime.ts";
 
@@ -202,13 +204,14 @@ export async function downloadPixellabFile(
     });
     throw createPixellabError(response, payload);
   }
-  const bytes = await readBoundedResponseBytes(response, {
-    maxBytes: context.transitFiles.maxBytes,
+  const mimeType = response.headers.get("content-type") ?? "application/octet-stream";
+  const stored = await storeResponseInTransit(response, context.transitFiles, {
+    name,
+    mimeType,
     fieldName: name,
     createError: (message) => new ProviderRequestError(413, message),
+    signal: context.signal,
   });
-  const mimeType = response.headers.get("content-type") ?? "application/octet-stream";
-  const stored = await context.transitFiles.create(new File([Uint8Array.from(bytes)], name, { type: mimeType }));
   return {
     fileId: stored.fileId,
     downloadUrl: stored.downloadUrl,

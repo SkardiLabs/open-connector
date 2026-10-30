@@ -1,4 +1,11 @@
 import type { CatalogStore, RuntimeProviderDefinition } from "./catalog-store.ts";
+import type {
+  IConnectionStore,
+  StoredConnection,
+  StoredLocalConnection,
+  StoredSaasConnection,
+  SaasConnectionReference,
+} from "./connection-store.ts";
 import type { ProviderHttpDispatchOptions } from "./core/provider-http-dispatch.ts";
 import type {
   ApiKeyAuthDefinition,
@@ -16,8 +23,10 @@ import type { MarketplacePricing, MarketplaceService } from "./marketplace/marke
 import type { IOAuthCredentialRefresher, OAuthRevocationOutcome } from "./oauth/oauth-credential-refresh-service.ts";
 import type { IProviderLoader } from "./providers/provider-loader.ts";
 
+import { ConnectionError } from "./connection-error.ts";
 import { normalizeCredentialValues } from "./core/credential-fields.ts";
 import { apiKeyCredentialFields } from "./core/provider-setup.ts";
+import { CredentialResolver, isOAuthCredentialExpired } from "./credential-resolver.ts";
 import {
   providerFetch,
   ProviderDispatchRequestError,
@@ -36,6 +45,8 @@ export interface ConnectionSummary {
   connectionName: string;
   authType: AuthType | "marketplace";
   configured: boolean;
+  /** Known credential state; token expiry alone does not require new consent when refresh is available. */
+  status?: "active" | "reauth_required";
   virtual: boolean;
   default: boolean;
   profile: CredentialProfile;
@@ -73,38 +84,6 @@ export interface ConnectionServiceOptions {
   marketplace?: MarketplaceService;
 }
 
-export interface SaasConnectionReference {
-  managedProjectId: string;
-  providerConfigId: string;
-  externalUserId: string;
-  connectedAccountId: string;
-  localRequestId: string;
-}
-
-export interface StoredSaasConnection {
-  source: "saas";
-  credential?: never;
-  id: string;
-  revision: string;
-  service: string;
-  connectionName: string;
-  reference: SaasConnectionReference;
-  profile: CredentialProfile;
-  status: "active" | "reauth_required";
-  comment: string | null;
-}
-
-export type StoredConnection = StoredLocalConnection | StoredSaasConnection;
-
-export interface StoredLocalConnection {
-  source?: "local";
-  id: string;
-  revision: string;
-  service: string;
-  connectionName: string;
-  credential: ResolvedCredential;
-}
-
 export interface DisconnectOptions {
   /**
    * `true` also revokes the OAuth grant at the provider once the credential is
@@ -124,41 +103,23 @@ export interface DisconnectedConnectionSummary {
   revoked: OAuthRevocationOutcome;
 }
 
-export type ExecutionConnection = LocalExecutionConnection | MarketplaceExecutionConnection | SaasExecutionConnection;
+export type ResolvedConnection = LocalResolvedConnection | MarketplaceResolvedConnection | SaasResolvedConnection;
 
-interface LocalExecutionConnection {
-  kind: "local";
+interface LocalResolvedConnection {
+  source: "local";
   summary?: ConnectionSummary;
-  getCredential(service: string): Promise<ResolvedCredential | undefined>;
+  credential?: ResolvedCredential;
 }
 
-interface MarketplaceExecutionConnection {
-  kind: "marketplace";
+interface MarketplaceResolvedConnection {
+  source: "marketplace";
   summary: ConnectionSummary;
 }
 
-interface SaasExecutionConnection {
-  kind: "saas";
+interface SaasResolvedConnection {
+  source: "saas";
   summary: ManagedConnectionSummary;
   reference: SaasConnectionReference;
-}
-
-/**
- * Storage contract for local provider connections.
- */
-export interface IConnectionStore {
-  get(service: string, connectionName: string): Promise<StoredConnection | undefined>;
-  getRetirementGeneration(service: string, connectionName: string): Promise<string>;
-  setIfCurrentGeneration(
-    service: string,
-    connectionName: string,
-    credential: ResolvedCredential,
-    retirementGeneration: string,
-  ): Promise<StoredLocalConnection | undefined>;
-  set(service: string, connectionName: string, credential: ResolvedCredential): Promise<StoredLocalConnection>;
-  updateCredential(input: StoredLocalConnection, refresh?: boolean): Promise<boolean>;
-  delete(service: string, connectionName: string): Promise<void>;
-  list(): Promise<StoredConnection[]>;
 }
 
 interface ApiKeyCredentialValidationInput {
@@ -183,33 +144,6 @@ interface PreviousCredentialRuntimeData {
 type CredentialValidatorCall = () => Promise<CredentialValidationResult | void> | undefined;
 type OAuthCredential = Extract<ResolvedCredential, { authType: "oauth2" }>;
 
-const OAUTH_REFRESH_PERSIST_ATTEMPTS = 3;
-
-/**
- * Lays a refresh result onto the connection's current credential. A refresh owns the token
- * fields and the metadata keys it changed; everything else on `current` belongs to whoever
- * bumped the revision and is kept.
- */
-function mergeRefreshedOAuthCredential(
-  current: OAuthCredential,
-  spent: OAuthCredential,
-  refreshed: OAuthCredential,
-): OAuthCredential {
-  const metadata = { ...current.metadata };
-  for (const [key, value] of Object.entries(refreshed.metadata)) {
-    if (JSON.stringify(value) !== JSON.stringify(spent.metadata[key])) metadata[key] = value;
-  }
-  return {
-    ...current,
-    accessToken: refreshed.accessToken,
-    tokenType: refreshed.tokenType,
-    expiresAt: refreshed.expiresAt,
-    refreshToken: refreshed.refreshToken,
-    providerSecret: refreshed.providerSecret,
-    metadata,
-  };
-}
-
 /**
  * Coordinates local provider connection state.
  *
@@ -219,7 +153,7 @@ function mergeRefreshedOAuthCredential(
 export class ConnectionService {
   private readonly providerHttpDispatch?: ProviderHttpDispatchOptions;
   private readonly catalog: CatalogStore;
-  private readonly oauthCredentialRefreshes = new Map<string, Promise<OAuthCredential>>();
+  private readonly credentials: CredentialResolver;
   private readonly oauthCredentials?: IOAuthCredentialRefresher;
   private readonly providerLoader: IProviderLoader;
   private readonly store: IConnectionStore;
@@ -232,6 +166,7 @@ export class ConnectionService {
     this.oauthCredentials = input.oauthCredentials;
     this.providerLoader = input.providerLoader;
     this.store = input.store;
+    this.credentials = new CredentialResolver(input);
     this.logger = input.logger;
     this.marketplace = input.marketplace;
   }
@@ -336,28 +271,25 @@ export class ConnectionService {
         : undefined;
   }
 
-  async resolveForExecution(
+  async resolveConnection(
     service: string,
     connectionName?: string,
     connectionId?: string,
-  ): Promise<ExecutionConnection> {
+  ): Promise<ResolvedConnection> {
     const provider = this.getProvider(service);
     const stored = await this.selectStoredConnection(service, connectionName, connectionId);
     const name = stored?.connectionName ?? normalizeConnectionName(connectionName);
     const marketplace = connectionId
       ? undefined
       : await this.resolveMarketplaceSummary(provider, connectionName, Boolean(stored));
-    if (marketplace) return { kind: "marketplace", summary: marketplace };
+    if (marketplace) return { source: "marketplace", summary: marketplace };
     if (!stored && connectionName && !this.supportsAuth(provider, "no_auth")) {
       throw new ConnectionError("connection_not_found", `${service} connection not found: ${name}.`);
     }
 
     if (stored?.source === "saas")
-      return { kind: "saas", summary: this.createManagedConnectionSummary(stored), reference: stored.reference };
-    let credential: ResolvedCredential | undefined = stored?.credential;
-    if (stored?.credential.authType === "oauth2") {
-      credential = await this.resolveOAuthCredential(stored, stored.credential);
-    }
+      return { source: "saas", summary: this.createManagedConnectionSummary(stored), reference: stored.reference };
+    let credential = stored ? await this.credentials.resolve(stored) : undefined;
     credential ??= this.supportsAuth(provider, "no_auth") ? { authType: "no_auth" } : undefined;
     const summary = stored
       ? this.createConfiguredConnectionSummary(provider, stored.id, name, credential!)
@@ -366,9 +298,9 @@ export class ConnectionService {
         : undefined;
 
     return {
-      kind: "local",
+      source: "local",
       summary,
-      getCredential: async (requestedService) => (requestedService === service ? credential : undefined),
+      credential,
     };
   }
 
@@ -379,9 +311,7 @@ export class ConnectionService {
     if (stored?.source === "saas")
       throw new ConnectionError("unsupported_auth_type", "SaaS credentials are not available locally.");
     if (stored) {
-      return stored.credential.authType === "oauth2"
-        ? await this.resolveOAuthCredential(stored, stored.credential)
-        : stored.credential;
+      return this.credentials.resolve(stored);
     }
 
     if (connectionName && !this.supportsAuth(provider, "no_auth")) {
@@ -571,10 +501,7 @@ export class ConnectionService {
       };
     const credential = stored.credential;
     return {
-      status:
-        credential.authType === "oauth2" && !credential.refreshToken && isOAuthCredentialExpired(credential)
-          ? "reauth_required"
-          : "active",
+      status: "active",
       ...this.createConfiguredConnectionSummary(
         this.getProvider(stored.service),
         stored.id,
@@ -589,7 +516,7 @@ export class ConnectionService {
   }
 
   private async saveCredential(
-    provider: ProviderDefinition,
+    provider: Omit<ProviderDefinition, "actions">,
     credential: Exclude<ResolvedCredential, { authType: "no_auth" }>,
     input: ConnectWithCredentialInput,
   ): Promise<ConnectionSummary> {
@@ -692,7 +619,7 @@ export class ConnectionService {
   }
 
   private createConfiguredConnectionSummary(
-    provider: ProviderDefinition,
+    provider: Omit<ProviderDefinition, "actions">,
     id: string,
     connectionName: string,
     credential: ResolvedCredential,
@@ -709,7 +636,7 @@ export class ConnectionService {
   }
 
   private createStoredConnectionSummary(
-    provider: ProviderDefinition,
+    provider: Omit<ProviderDefinition, "actions">,
     id: string,
     connectionName: string,
     credential: Exclude<ResolvedCredential, { authType: "no_auth" }>,
@@ -720,6 +647,12 @@ export class ConnectionService {
       connectionName,
       authType: credential.authType,
       configured: true,
+      status:
+        credential.authType === "oauth2" &&
+        (credential.metadata.oauthReauthRequired === true ||
+          (!credential.refreshToken && isOAuthCredentialExpired(credential)))
+          ? "reauth_required"
+          : "active",
       virtual: false,
       default: connectionName === defaultConnectionName,
       profile: credential.profile,
@@ -731,7 +664,10 @@ export class ConnectionService {
     return summary;
   }
 
-  private createNoAuthConnectionSummary(provider: ProviderDefinition, connectionName: string): ConnectionSummary {
+  private createNoAuthConnectionSummary(
+    provider: Omit<ProviderDefinition, "actions">,
+    connectionName: string,
+  ): ConnectionSummary {
     return {
       id: `${provider.service}:${connectionName}`,
       service: provider.service,
@@ -758,7 +694,7 @@ export class ConnectionService {
   }
 
   private createMarketplaceConnectionSummary(
-    provider: ProviderDefinition,
+    provider: Omit<ProviderDefinition, "actions">,
     preferences: ReadonlyMap<string, boolean>,
     isDefault = false,
   ): ConnectionSummary | undefined {
@@ -805,11 +741,11 @@ export class ConnectionService {
     return provider;
   }
 
-  private supportsAuth(provider: ProviderDefinition, authType: AuthType): boolean {
+  private supportsAuth(provider: Omit<ProviderDefinition, "actions">, authType: AuthType): boolean {
     return provider.authTypes.includes(authType);
   }
 
-  private getApiKeyDefinition(provider: ProviderDefinition): ApiKeyAuthDefinition {
+  private getApiKeyDefinition(provider: Omit<ProviderDefinition, "actions">): ApiKeyAuthDefinition {
     const auth = provider.auth.find((auth) => auth.type === "api_key");
     if (!auth || auth.type !== "api_key") {
       throw new ConnectionError("unsupported_auth_type", `${provider.service} does not support api_key.`);
@@ -818,7 +754,7 @@ export class ConnectionService {
     return auth;
   }
 
-  private getCustomCredentialDefinition(provider: ProviderDefinition): CustomCredentialAuthDefinition {
+  private getCustomCredentialDefinition(provider: Omit<ProviderDefinition, "actions">): CustomCredentialAuthDefinition {
     const auth = provider.auth.find((auth) => auth.type === "custom_credential");
     if (!auth || auth.type !== "custom_credential") {
       throw new ConnectionError("unsupported_auth_type", `${provider.service} does not support custom_credential.`);
@@ -877,90 +813,6 @@ export class ConnectionService {
     };
   }
 
-  private async resolveOAuthCredential(
-    connection: StoredConnection,
-    credential: OAuthCredential,
-  ): Promise<OAuthCredential> {
-    const service = connection.service;
-    if (!isOAuthCredentialExpired(credential)) {
-      return credential;
-    }
-
-    if (!credential.refreshToken) {
-      throw new ConnectionError(
-        "oauth_token_expired",
-        `${service} OAuth access token expired and no refresh token is available. Reconnect ${service}.`,
-      );
-    }
-
-    if (!this.oauthCredentials) {
-      throw new ConnectionError(
-        "oauth_refresh_unavailable",
-        `${service} OAuth access token expired and this runtime cannot refresh it.`,
-      );
-    }
-
-    // Single-flight on the refresh token being spent, not the row revision: a single-use
-    // (rotating) refresh token must reach the provider once even when an unrelated write
-    // bumps the revision mid-refresh. A replaced credential carries a different refresh
-    // token and still refreshes independently.
-    const refreshKey = JSON.stringify([connection.id, credential.refreshToken]);
-    const currentRefresh = this.oauthCredentialRefreshes.get(refreshKey);
-    if (currentRefresh) {
-      return currentRefresh;
-    }
-
-    const refresh = this.refreshOAuthCredential(connection, credential, this.oauthCredentials);
-    this.oauthCredentialRefreshes.set(refreshKey, refresh);
-    try {
-      return await refresh;
-    } finally {
-      if (this.oauthCredentialRefreshes.get(refreshKey) === refresh) {
-        this.oauthCredentialRefreshes.delete(refreshKey);
-      }
-    }
-  }
-
-  private async refreshOAuthCredential(
-    connection: StoredConnection,
-    credential: OAuthCredential,
-    refresher: IOAuthCredentialRefresher,
-  ): Promise<OAuthCredential> {
-    const { id, service, connectionName } = connection;
-    const nextCredential = await withProviderHttpDispatchResult(
-      { operation: "oauth", service, connectionId: id, connectionName },
-      () => refresher.refresh(service, credential),
-      this.providerHttpDispatch,
-    );
-    // The provider has now spent the old refresh token. With rotating single-use refresh
-    // tokens, discarding `nextCredential` loses the connection for good, so a lost
-    // revision race re-reads the row and lands the refreshed token fields on the latest
-    // revision, as long as that row still holds the credential this refresh spent.
-    let target: StoredLocalConnection = { ...connection, source: "local", credential: nextCredential };
-    for (let attempt = 0; attempt < OAUTH_REFRESH_PERSIST_ATTEMPTS; attempt++) {
-      if (await this.store.updateCredential(target, true)) return target.credential as OAuthCredential;
-      const current = await this.store.get(service, connectionName);
-      if (
-        current?.source === "saas" ||
-        current?.id !== id ||
-        current.credential.authType !== "oauth2" ||
-        current.credential.refreshToken !== credential.refreshToken ||
-        current.credential.metadata.oauthAuthorizationId !== credential.metadata.oauthAuthorizationId
-      ) {
-        // Deleted, converted, reconnected, or already rotated elsewhere: never overwrite it.
-        break;
-      }
-      target = {
-        ...current,
-        credential: mergeRefreshedOAuthCredential(current.credential, credential, nextCredential),
-      };
-    }
-    throw new ConnectionError(
-      "connection_not_found",
-      `${service} connection changed while its OAuth credential was refreshing. Retry the action.`,
-    );
-  }
-
   private async runCredentialValidator(
     service: string,
     validate: CredentialValidatorCall,
@@ -995,7 +847,7 @@ export class ConnectionService {
   }
 
   private buildCredentialRuntimeData(
-    provider: ProviderDefinition,
+    provider: Omit<ProviderDefinition, "actions">,
     authType: Exclude<AuthType, "no_auth">,
     credentialFields: CredentialDefinition[],
     credentialValues: Record<string, string>,
@@ -1015,7 +867,7 @@ export class ConnectionService {
   }
 
   private mergeCredentialRuntimeData(
-    provider: ProviderDefinition,
+    provider: Omit<ProviderDefinition, "actions">,
     authType: Exclude<AuthType, "no_auth">,
     credential: Extract<ResolvedCredential, { authType: "oauth2" }>,
     validation: CredentialValidationResult,
@@ -1041,7 +893,7 @@ export class ConnectionService {
   }
 
   private createCredentialProfile(
-    provider: ProviderDefinition,
+    provider: Omit<ProviderDefinition, "actions">,
     authType: Exclude<AuthType, "no_auth">,
     credentialFields: CredentialDefinition[],
     credentialValues: Record<string, string>,
@@ -1075,7 +927,7 @@ export class ConnectionService {
     };
   }
 
-  private createNoAuthProfile(provider: ProviderDefinition): CredentialProfile {
+  private createNoAuthProfile(provider: Omit<ProviderDefinition, "actions">): CredentialProfile {
     return {
       accountId: `${provider.service}:public`,
       displayName: `${provider.displayName} Public`,
@@ -1084,7 +936,7 @@ export class ConnectionService {
   }
 
   private createDefaultAccountId(
-    provider: ProviderDefinition,
+    provider: Omit<ProviderDefinition, "actions">,
     authType: Exclude<AuthType, "no_auth">,
     credentialFields: CredentialDefinition[],
     credentialValues: Record<string, string>,
@@ -1098,18 +950,12 @@ export class ConnectionService {
       : `${provider.service}:${authType}`;
   }
 
-  private createDefaultDisplayName(provider: ProviderDefinition, authType: Exclude<AuthType, "no_auth">): string {
+  private createDefaultDisplayName(
+    provider: Omit<ProviderDefinition, "actions">,
+    authType: Exclude<AuthType, "no_auth">,
+  ): string {
     return `${provider.displayName} ${authType === "api_key" ? "API Key" : "Credential"}`;
   }
-}
-
-function isOAuthCredentialExpired(credential: Extract<ResolvedCredential, { authType: "oauth2" }>): boolean {
-  if (!credential.expiresAt) {
-    return false;
-  }
-
-  const expiresAt = Date.parse(credential.expiresAt);
-  return Number.isFinite(expiresAt) && expiresAt <= Date.now() + 60_000;
 }
 
 export function normalizeConnectionName(value: string | undefined): string {
@@ -1135,18 +981,6 @@ function parseScopeString(value: string | undefined): string[] | undefined {
 function readLegacyString(metadata: Record<string, unknown> | undefined, key: string): string | undefined {
   const value = metadata?.[key];
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
-}
-
-/**
- * Error with a stable code suitable for HTTP responses.
- */
-export class ConnectionError extends Error {
-  readonly code: string;
-
-  constructor(code: string, message: string) {
-    super(message);
-    this.code = code;
-  }
 }
 
 function describeError(error: unknown): string {

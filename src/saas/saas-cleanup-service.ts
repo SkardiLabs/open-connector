@@ -1,10 +1,12 @@
+import type { RuntimeExecutionOptions } from "../core/runtime-execution.ts";
 import type { RuntimeLogger } from "../core/types.ts";
 import type { ConnectionRequestStore } from "../server/storage/connection-request-store.ts";
 import type { SaasCleanup, SaasProjectStore } from "../server/storage/saas-project-store.ts";
 
+import { withRuntimeExecution } from "../core/runtime-execution.ts";
 import { SaasClient, SaasError } from "./saas-client.ts";
 
-export interface SaasCleanupServiceOptions {
+export interface SaasCleanupServiceOptions extends RuntimeExecutionOptions {
   store: SaasProjectStore;
   requests: ConnectionRequestStore;
   client?: SaasClient;
@@ -27,7 +29,7 @@ export class SaasCleanupService {
 
   run(): Promise<void> {
     if (this.shutdown.signal.aborted) return Promise.resolve();
-    this.pending ??= this.runBatch()
+    this.pending ??= withRuntimeExecution(this.options, { operation: "runtime" }, () => this.runBatch())
       .catch(() => {
         this.options.logger?.warn(
           { errorCode: "saas_cleanup_failed" },

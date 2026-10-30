@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
+import { withProviderNetworkPolicy } from "./provider-network-policy.ts";
 import {
   assertPublicHttpUrl,
   classifyIpAddress,
@@ -11,8 +12,6 @@ import {
   parsePrivateNetworkAccessFlag,
   readBoundedResponseBytes,
   storeResponseInTransit,
-  setEgressTrustedHosts,
-  setPrivateNetworkAccessAllowed,
 } from "./request.ts";
 
 it.each([undefined, "2"])(
@@ -297,17 +296,16 @@ describe("classifyIpAddress", () => {
 });
 
 describe("private network access deployment flag", () => {
-  afterEach(() => setPrivateNetworkAccessAllowed(false));
-
   it("is disabled by default", () => {
     expect(isPrivateNetworkAccessAllowed()).toBe(false);
   });
 
   it("reflects the configured value", () => {
-    setPrivateNetworkAccessAllowed(true);
-    expect(isPrivateNetworkAccessAllowed()).toBe(true);
-    setPrivateNetworkAccessAllowed(false);
-    expect(isPrivateNetworkAccessAllowed()).toBe(false);
+    return withProviderNetworkPolicy({ allowPrivateNetwork: true }, async () => {
+      expect(isPrivateNetworkAccessAllowed()).toBe(true);
+
+      withProviderNetworkPolicy({}, () => expect(isPrivateNetworkAccessAllowed()).toBe(false));
+    });
   });
 
   it("parses only explicit truthy env values", () => {
@@ -329,8 +327,6 @@ function readPublicUrl(value: string, allowPrivateNetwork = false): URL {
 }
 
 describe("trusted egress hosts", () => {
-  afterEach(() => setEgressTrustedHosts([]));
-
   it("parses a comma-separated list and drops entries that would match nothing", () => {
     expect(parseEgressTrustedHosts(" .feishu.cn , API.Example.com ,, . ,")).toEqual([".feishu.cn", "api.example.com"]);
     expect(parseEgressTrustedHosts(undefined)).toEqual([]);
@@ -338,21 +334,23 @@ describe("trusted egress hosts", () => {
   });
 
   it("matches a dot-prefixed entry against the domain and its subdomains only", () => {
-    setEgressTrustedHosts([".feishu.cn"]);
-    expect(isEgressTrustedHost("feishu.cn")).toBe(true);
-    expect(isEgressTrustedHost("open.feishu.cn")).toBe(true);
-    expect(isEgressTrustedHost("OPEN.FEISHU.CN")).toBe(true);
-    expect(isEgressTrustedHost("open.feishu.cn.")).toBe(true);
-    // A look-alike registration must not inherit the allowlist.
-    expect(isEgressTrustedHost("evilfeishu.cn")).toBe(false);
-    expect(isEgressTrustedHost("feishu.cn.attacker.example")).toBe(false);
+    return withProviderNetworkPolicy({ trustedHosts: [".feishu.cn"] }, async () => {
+      expect(isEgressTrustedHost("feishu.cn")).toBe(true);
+      expect(isEgressTrustedHost("open.feishu.cn")).toBe(true);
+      expect(isEgressTrustedHost("OPEN.FEISHU.CN")).toBe(true);
+      expect(isEgressTrustedHost("open.feishu.cn.")).toBe(true);
+      // A look-alike registration must not inherit the allowlist.
+      expect(isEgressTrustedHost("evilfeishu.cn")).toBe(false);
+      expect(isEgressTrustedHost("feishu.cn.attacker.example")).toBe(false);
+    });
   });
 
   it("requires an exact match for an entry without a leading dot", () => {
-    setEgressTrustedHosts(["api.example.com"]);
-    expect(isEgressTrustedHost("api.example.com")).toBe(true);
-    expect(isEgressTrustedHost("sub.api.example.com")).toBe(false);
-    expect(isEgressTrustedHost("example.com")).toBe(false);
+    return withProviderNetworkPolicy({ trustedHosts: ["api.example.com"] }, async () => {
+      expect(isEgressTrustedHost("api.example.com")).toBe(true);
+      expect(isEgressTrustedHost("sub.api.example.com")).toBe(false);
+      expect(isEgressTrustedHost("example.com")).toBe(false);
+    });
   });
 
   it("trusts no hosts by default", () => {
@@ -406,6 +404,17 @@ describe("storeResponseInTransit", () => {
     createError: (message: string) => Object.assign(new Error(message), { status: 413 }),
   };
 
+  it.each([true, false])(
+    "enforces the smaller provider limit without Content-Length (streaming=%s)",
+    async (streaming) => {
+      const { stored, writer } = store({ maxBytes: 1024, streaming });
+      await expect(
+        storeResponseInTransit(new Response("12345"), writer, { ...options, maxBytes: 4 }),
+      ).rejects.toMatchObject({ status: 413, message: "Test download exceeds 4 bytes" });
+      expect(stored).toEqual([]);
+    },
+  );
+
   it("pipes the body to a streaming backend instead of buffering it", async () => {
     const { stored, writer } = store({ maxBytes: 1024, streaming: true });
     const upload = await storeResponseInTransit(new Response(new Uint8Array([1, 2, 3])), writer, options);
@@ -420,6 +429,27 @@ describe("storeResponseInTransit", () => {
     await storeResponseInTransit(new Response(new Uint8Array([4, 5])), writer, options);
     expect(stored.map((s) => [s.via, [...s.bytes]])).toEqual([["file", [4, 5]]]);
   });
+
+  it.each([true, false])("normalizes the mime type the way File does (streaming=%s)", async (streaming) => {
+    const { stored, writer } = store({ maxBytes: 1024, streaming });
+    await storeResponseInTransit(new Response("content"), writer, {
+      ...options,
+      mimeType: "Application/X-NDJSON",
+    });
+    expect(stored[0]?.mimeType).toBe("application/x-ndjson");
+  });
+
+  it.each([true, false])(
+    "empties a mime type carrying non-ASCII bytes like File does (streaming=%s)",
+    async (streaming) => {
+      const { stored, writer } = store({ maxBytes: 1024, streaming });
+      await storeResponseInTransit(new Response("content"), writer, {
+        ...options,
+        mimeType: "text/plain\u0080",
+      });
+      expect(stored[0]?.mimeType).toBe("");
+    },
+  );
 
   it.each([true, false])(
     "repairs unpaired filename surrogates without changing emoji (streaming=%s)",

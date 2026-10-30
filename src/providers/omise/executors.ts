@@ -1,12 +1,12 @@
 import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
-import type { ApiKeyProviderContext, ProviderActionHandlers } from "../provider-runtime.ts";
+import type { ApiKeyProviderContext, ProviderActionHandlers } from "../provider-executors.ts";
 
 import { objectArray, optionalRecord, optionalString, requiredRecord, requiredString } from "../../core/cast.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
 import { readProviderTextBody } from "../provider-runtime.ts";
 import {
   basicAuthorizationHeader,
-  defineApiKeyProviderExecutors,
-  defineProviderProxy,
   providerInputError,
   providerResponseError,
   providerUserAgent,
@@ -144,7 +144,6 @@ async function request(
       response.status,
       optionalString(record?.message) ?? `Omise request failed with status ${response.status}`,
       payload,
-      optionalString(record?.code),
     );
   }
   return payload;

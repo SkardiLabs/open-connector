@@ -1,4 +1,5 @@
-import type { IConnectionStore, StoredConnection } from "../connection-service.ts";
+import type { CatalogStore } from "../catalog-store.ts";
+import type { IConnectionStore, StoredConnection } from "../connection-store.ts";
 import type { ActionPolicyService } from "../core/action-policy.ts";
 import type { TokenPolicy } from "../core/action-policy.ts";
 import type { ActionSearchIndexProvider } from "../core/action-search.ts";
@@ -142,6 +143,263 @@ afterEach(() => {
 });
 
 describe("ConnectServer", () => {
+  describe("Slack inbound event verification", () => {
+    const slackProvider: ProviderDefinition = {
+      ...oauthProvider,
+      service: "slackbot",
+      displayName: "Slack Bot",
+      auth: [
+        {
+          ...(oauthProvider.auth[0] as Extract<ProviderDefinition["auth"][number], { type: "oauth2" }>),
+          clientConfigFields: [
+            {
+              key: "appId",
+              label: "App ID",
+              inputType: "text",
+              required: false,
+              secret: false,
+            },
+            {
+              key: "signingSecret",
+              label: "Signing Secret",
+              inputType: "password",
+              required: false,
+              secret: true,
+              location: "secretExtra",
+            },
+          ],
+        },
+      ],
+    };
+    const signingSecret = "route-signing-secret";
+
+    async function sign(body: string, timestamp: string): Promise<string> {
+      const encoder = new TextEncoder();
+      const key = await crypto.subtle.importKey(
+        "raw",
+        encoder.encode(signingSecret),
+        { name: "HMAC", hash: "SHA-256" },
+        false,
+        ["sign"],
+      );
+      const mac = new Uint8Array(await crypto.subtle.sign("HMAC", key, encoder.encode(`v0:${timestamp}:${body}`)));
+      return `v0=${[...mac].map((value) => value.toString(16).padStart(2, "0")).join("")}`;
+    }
+
+    async function configure(app: ReturnType<ConnectServer["createApp"]>): Promise<void> {
+      const response = await app.request("/api/oauth/configs/slackbot", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          clientId: "client",
+          clientSecret: "secret",
+          extra: { appId: "A123" },
+          secretExtra: { signingSecret },
+        }),
+      });
+      expect(response.status).toBe(200);
+    }
+
+    async function verifyRequest(
+      app: ReturnType<ConnectServer["createApp"]>,
+      body: string,
+      headers: Record<string, string> = {},
+    ): Promise<Response> {
+      const timestamp = String(Math.floor(Date.now() / 1000));
+      return app.request("/v1/providers/slackbot/events/verify", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer verify-token",
+          "x-slack-request-timestamp": timestamp,
+          "x-slack-signature": await sign(body, timestamp),
+          ...headers,
+        },
+        body,
+      });
+    }
+
+    it("is disabled when no verification token is configured", async () => {
+      const app = createTestServer([slackProvider]).createApp();
+      const response = await app.request("/v1/providers/slackbot/events/verify", { method: "POST", body: "{}" });
+      expect(response.status).toBe(404);
+    });
+
+    it("rejects a missing or wrong bearer token", async () => {
+      const app = createTestServer([slackProvider], {
+        eventVerifyToken: "verify-token",
+      }).createApp();
+      await configure(app);
+      expect((await verifyRequest(app, "{}", { authorization: "Bearer wrong" })).status).toBe(401);
+      expect((await verifyRequest(app, "{}", { authorization: "" })).status).toBe(401);
+    });
+
+    it("reports not configured until appId and signing secret are saved", async () => {
+      const app = createTestServer([slackProvider], {
+        eventVerifyToken: "verify-token",
+      }).createApp();
+      expect((await verifyRequest(app, "{}")).status).toBe(409);
+    });
+
+    it("accepts a signed event for the configured app and does not require the admin token", async () => {
+      const app = createTestServer([slackProvider], {
+        eventVerifyToken: "verify-token",
+        auth: { adminToken: "admin-token", runtimeToken: "runtime-token" },
+      }).createApp();
+      const configured = await app.request("/api/oauth/configs/slackbot", {
+        method: "PUT",
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer admin-token",
+        },
+        body: JSON.stringify({
+          clientId: "client",
+          clientSecret: "secret",
+          extra: { appId: "A123" },
+          secretExtra: { signingSecret },
+        }),
+      });
+      expect(configured.status).toBe(200);
+      const body = JSON.stringify({
+        type: "event_callback",
+        api_app_id: "A123",
+      });
+      const response = await verifyRequest(app, body);
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({
+        success: true,
+        message: "OK",
+        meta: {},
+        data: { valid: true, appId: "A123", challenge: null },
+      });
+      for (const token of ["admin-token", "runtime-token"]) {
+        const rejected = await verifyRequest(app, body, { authorization: `Bearer ${token}` });
+        expect(rejected.status).toBe(401);
+        expect(await rejected.json()).toMatchObject({ success: false, errorCode: "unauthorized" });
+      }
+    });
+
+    it("accepts a signed form-urlencoded interaction callback", async () => {
+      const app = createTestServer([slackProvider], { eventVerifyToken: "verify-token" }).createApp();
+      await configure(app);
+      const body = "payload=%7B%22type%22%3A%22block_actions%22%7D";
+      const response = await verifyRequest(app, body, {
+        "content-type": "application/x-www-form-urlencoded; charset=utf-8",
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        success: true,
+        data: { valid: true, appId: "A123", challenge: null },
+      });
+    });
+
+    it("returns a client error for a signed but malformed payload", async () => {
+      const app = createTestServer([slackProvider], {
+        eventVerifyToken: "verify-token",
+      }).createApp();
+      await configure(app);
+      const response = await verifyRequest(app, "{");
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({ success: false, errorCode: "invalid_event_payload", data: null });
+    });
+
+    it("rejects a forged signature and a foreign app id", async () => {
+      const app = createTestServer([slackProvider], {
+        eventVerifyToken: "verify-token",
+      }).createApp();
+      await configure(app);
+      const body = JSON.stringify({
+        type: "event_callback",
+        api_app_id: "A123",
+      });
+      expect(
+        (
+          await verifyRequest(app, body, {
+            "x-slack-signature": `v0=${"0".repeat(64)}`,
+          })
+        ).status,
+      ).toBe(401);
+      const foreign = await verifyRequest(app, JSON.stringify({ type: "event_callback", api_app_id: "AOTHER" }));
+      expect(foreign.status).toBe(403);
+      expect(await foreign.json()).toMatchObject({ success: false, errorCode: "webhook_app_mismatch", data: null });
+    });
+
+    it("preserves omitted secrets and explicitly clears the signing secret", async () => {
+      const app = createTestServer([slackProvider], { eventVerifyToken: "verify-token" }).createApp();
+      await configure(app);
+      const save = (secretExtra: Record<string, string>) =>
+        app.request("/api/oauth/configs/slackbot", {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ clientId: "client", extra: { appId: "A123" }, secretExtra }),
+        });
+      const saved = await save({});
+      expect(saved.status).toBe(200);
+      expect(JSON.stringify(await saved.json())).not.toContain(signingSecret);
+      const event = JSON.stringify({ type: "event_callback", api_app_id: "A123" });
+      expect((await verifyRequest(app, event)).status).toBe(200);
+      expect((await save({ signingSecret: "" })).status).toBe(200);
+      const cleared = await verifyRequest(app, event);
+      expect(cleared.status).toBe(409);
+      expect(await cleared.json()).toMatchObject({ errorCode: "event_verification_not_configured" });
+    });
+
+    it("accepts a challenge and rejects malformed or foreign challenge envelopes", async () => {
+      const app = createTestServer([slackProvider], { eventVerifyToken: "verify-token" }).createApp();
+      await configure(app);
+      const success = await verifyRequest(app, JSON.stringify({ type: "url_verification", challenge: "hello" }));
+      expect(success.status).toBe(200);
+      expect(await success.json()).toMatchObject({ data: { valid: true, appId: "A123", challenge: "hello" } });
+      const foreign = await verifyRequest(
+        app,
+        JSON.stringify({ type: "url_verification", challenge: "hello", api_app_id: "OTHER" }),
+      );
+      expect(foreign.status).toBe(403);
+      expect(await foreign.json()).toMatchObject({ errorCode: "webhook_app_mismatch" });
+      for (const payload of [{ api_app_id: "A123" }, { type: "url_verification" }]) {
+        const invalid = await verifyRequest(app, JSON.stringify(payload));
+        expect(invalid.status).toBe(400);
+        expect(await invalid.json()).toMatchObject({ errorCode: "invalid_event_payload" });
+      }
+    });
+
+    it("rejects requests that declare an oversized body", async () => {
+      const app = createTestServer([slackProvider], {
+        eventVerifyToken: "verify-token",
+      }).createApp();
+      await configure(app);
+      const response = await verifyRequest(app, "{}", {
+        "content-length": String(64 * 1024 + 1),
+      });
+      expect(response.status).toBe(413);
+      expect(await response.json()).toMatchObject({
+        success: false,
+        errorCode: "webhook_request_too_large",
+        data: null,
+      });
+    });
+
+    it("rejects an oversized streamed body without content-length", async () => {
+      const app = createTestServer([slackProvider], {
+        eventVerifyToken: "verify-token",
+      }).createApp();
+      await configure(app);
+      const request = new Request("http://localhost:3000/v1/providers/slackbot/events/verify", {
+        method: "POST",
+        headers: { authorization: "Bearer verify-token" },
+        body: new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new Uint8Array(64 * 1024 + 1));
+            controller.close();
+          },
+        }),
+        duplex: "half",
+      } as RequestInit & { duplex: "half" });
+      expect(request.headers.has("content-length")).toBe(false);
+      const response = await app.request(request);
+      expect(response.status).toBe(413);
+    });
+  });
+
   it.each([401, 403, 502, 504])("preserves Marketplace error status %s", async (status) => {
     const database = new SqliteRuntimeDatabase(":memory:");
     requestDatabases.push(database);
@@ -1475,6 +1733,39 @@ describe("ConnectServer", () => {
     });
   });
 
+  it("documents every /v1 route the app serves", async () => {
+    const app = createTestServer([apiKeyProvider, oauthProvider]).createApp();
+    const document = (await (await app.request("/openapi.json")).json()) as {
+      paths: Record<string, Record<string, unknown>>;
+    };
+
+    // The served document is the SDK/CLI contract for these routes: a route
+    // added without a path entry, or a documented path that no longer exists,
+    // is invisible to every client that reads the document. Operations are read
+    // from the path item itself (excluding its non-operation fields) so the
+    // comparison covers every HTTP method without a method list to maintain.
+    const pathItemFields = new Set(["$ref", "summary", "description", "servers", "parameters"]);
+    const documented = new Set<string>();
+    for (const [path, operations] of Object.entries(document.paths)) {
+      if (!path.startsWith("/v1")) continue;
+      for (const method of Object.keys(operations)) {
+        if (pathItemFields.has(method) || method.startsWith("x-")) continue;
+        documented.add(`${method.toUpperCase()} ${path}`);
+      }
+    }
+
+    const registered = new Set(
+      app.routes
+        .filter((route) => route.method !== "ALL" && route.path.startsWith("/v1"))
+        .map((route) => `${route.method} ${route.path.replaceAll(/:([A-Za-z0-9_]+)/gu, "{$1}")}`),
+    );
+
+    expect(registered.size).toBeGreaterThanOrEqual(20);
+    expect(documented.size).toBeGreaterThanOrEqual(20);
+    expect([...registered].filter((route) => !documented.has(route))).toEqual([]);
+    expect([...documented].filter((route) => !registered.has(route))).toEqual([]);
+  });
+
   it("rejects non-POST MCP requests", async () => {
     const app = createTestServer([apiKeyProvider]).createApp();
 
@@ -1532,6 +1823,7 @@ describe("ConnectServer", () => {
   it("posts a cancelled authorization to the configured opener origin only, and never completes it later", async () => {
     const app = createTestServer([oauthProvider], {
       oauthResultOrigins: ["https://console.example.com"],
+      oauthCloseDelaySeconds: 2,
     }).createApp();
     const config = await app.request("/api/oauth/configs/oauth_example", {
       method: "PUT",
@@ -1556,11 +1848,13 @@ describe("ConnectServer", () => {
     expect(callback.status, html).toBe(200);
     expect(callback.headers.get("content-type")).toContain("text/html");
     expect(html).toContain("Authorization cancelled");
-    const result = JSON.stringify({ type: "skardi-oauth-result", status: "cancelled", code: "access_denied", state });
+    const result = JSON.stringify({ type: "oauth.refused", status: "cancelled", code: "access_denied", state });
     expect(html).toContain(`const result=${result}`);
     expect(html).toContain('for(const origin of ["https://console.example.com"])');
     expect(html).toContain("window.opener.postMessage(result,origin)");
     expect(html).not.toMatch(/postMessage\([^)]*"\*"/);
+    // The refusal page honours the configured close delay like the completion page.
+    expect(html).toContain("let remaining=2;");
 
     // A duplicate refusal for a state no longer pending (here: already
     // refused; equally, already completed by another callback) still gets the
@@ -1592,59 +1886,63 @@ describe("ConnectServer", () => {
     });
   });
 
-  it("lists OAuth connections after the callback completes", async () => {
-    const app = createTestServer([oauthProvider]).createApp();
-    const config = await app.request("/api/oauth/configs/oauth_example", {
-      method: "PUT",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        clientId: "client-id",
-        clientSecret: "client-secret",
-        secretExtra: {
-          appBearerToken: "app-token",
+  it.each([undefined, 0, 3])(
+    "lists OAuth connections after the callback completes with close delay %s",
+    async (oauthCloseDelaySeconds) => {
+      const app = createTestServer([oauthProvider], { oauthCloseDelaySeconds }).createApp();
+      const config = await app.request("/api/oauth/configs/oauth_example", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          clientId: "client-id",
+          clientSecret: "client-secret",
+          secretExtra: {
+            appBearerToken: "app-token",
+          },
+        }),
+      });
+      expect(config.status).toBe(200);
+      const authorization = await app.request("/api/oauth/authorizations", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ service: "oauth_example" }),
+      });
+      expect(authorization.status).toBe(200);
+      const { state } = (await authorization.json()) as { state: string };
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => Response.json({ access_token: "access-token", token_type: "Bearer" })),
+      );
+
+      const callback = await app.request(`/oauth/callback?state=${state}&code=example-code`);
+      const callbackText = await callback.text();
+
+      expect(callback.status, callbackText).toBe(200);
+      expect(callbackText).toContain("BroadcastChannel");
+      expect(callbackText).toContain('"type":"oauth.completed"');
+      expect(callbackText).toContain('"service":"oauth_example"');
+      expect(callbackText).not.toContain("window.opener");
+      expect(callbackText).not.toContain('postMessage(message,"*"');
+      expect(callbackText).toContain("Connection complete");
+      expect(callbackText).toContain("Close this window to continue where you started.");
+      expect(callbackText).not.toContain("OOMOL Connect");
+      expect(callbackText).toContain("card");
+      expect(callbackText).toContain("badge");
+      expect(callbackText).toContain(`Automatically closing in ${oauthCloseDelaySeconds ?? 5} seconds.`);
+      expect(callbackText).toContain(`let remaining=${oauthCloseDelaySeconds ?? 5};`);
+      expect(callbackText).toContain("setTimeout");
+      expect(callbackText).toContain("window.close()");
+      const connections = await app.request("/api/connections");
+      expect(connections.status).toBe(200);
+      await expect(connections.json()).resolves.toMatchObject([
+        {
+          service: "oauth_example",
+          authType: "oauth2",
+          configured: true,
         },
-      }),
-    });
-    expect(config.status).toBe(200);
-    const authorization = await app.request("/api/oauth/authorizations", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ service: "oauth_example" }),
-    });
-    expect(authorization.status).toBe(200);
-    const { state } = (await authorization.json()) as { state: string };
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => Response.json({ access_token: "access-token", token_type: "Bearer" })),
-    );
-
-    const callback = await app.request(`/oauth/callback?state=${state}&code=example-code`);
-    const callbackText = await callback.text();
-
-    expect(callback.status, callbackText).toBe(200);
-    expect(callbackText).toContain("BroadcastChannel");
-    expect(callbackText).toContain('"type":"oauth.completed"');
-    expect(callbackText).toContain('"service":"oauth_example"');
-    expect(callbackText).not.toContain("window.opener");
-    expect(callbackText).not.toContain('postMessage(message,"*"');
-    expect(callbackText).toContain("Connection complete");
-    expect(callbackText).toContain("Close this window to continue where you started.");
-    expect(callbackText).not.toContain("OOMOL Connect");
-    expect(callbackText).toContain("card");
-    expect(callbackText).toContain("badge");
-    expect(callbackText).toContain("Automatically closing in 5 seconds.");
-    expect(callbackText).toContain("setTimeout");
-    expect(callbackText).toContain("window.close()");
-    const connections = await app.request("/api/connections");
-    expect(connections.status).toBe(200);
-    await expect(connections.json()).resolves.toMatchObject([
-      {
-        service: "oauth_example",
-        authType: "oauth2",
-        configured: true,
-      },
-    ]);
-  });
+      ]);
+    },
+  );
 
   it("keeps the console shell public while protecting admin APIs", async () => {
     const staticRoot = await createTestStaticRoot();
@@ -2831,7 +3129,8 @@ describe("ConnectServer", () => {
 
     const providers = await app.request("/v1/providers");
     expect(providers.status).toBe(200);
-    expect(providers.headers.get("cache-control")).toBe("public, max-age=0, must-revalidate");
+    expect(providers.headers.get("cache-control")).toBe("no-store");
+    expect(providers.headers.get("cloudflare-cdn-cache-control")).toBeNull();
     await expect(providers.json()).resolves.toMatchObject({
       success: true,
       data: [
@@ -2846,7 +3145,8 @@ describe("ConnectServer", () => {
 
     const actionServices = await app.request("/v1/actions");
     expect(actionServices.status).toBe(200);
-    expect(actionServices.headers.get("cache-control")).toBe("public, max-age=0, must-revalidate");
+    expect(actionServices.headers.get("cache-control")).toBe("no-store");
+    expect(actionServices.headers.get("cloudflare-cdn-cache-control")).toBeNull();
     await expect(actionServices.json()).resolves.toMatchObject({
       success: true,
       data: [{ service: "example" }],
@@ -2854,7 +3154,8 @@ describe("ConnectServer", () => {
 
     const actions = await app.request("/v1/actions?service=example");
     expect(actions.status).toBe(200);
-    expect(actions.headers.get("cache-control")).toBe("public, max-age=0, must-revalidate");
+    expect(actions.headers.get("cache-control")).toBe("no-store");
+    expect(actions.headers.get("cloudflare-cdn-cache-control")).toBeNull();
     await expect(actions.json()).resolves.toMatchObject({
       success: true,
       data: [
@@ -2922,7 +3223,8 @@ describe("ConnectServer", () => {
 
     const action = await app.request("/v1/actions/example.echo");
     expect(action.status).toBe(200);
-    expect(action.headers.get("cache-control")).toBe("public, max-age=0, must-revalidate");
+    expect(action.headers.get("cache-control")).toBe("no-store");
+    expect(action.headers.get("cloudflare-cdn-cache-control")).toBeNull();
     await expect(action.json()).resolves.toMatchObject({
       success: true,
       meta: {},
@@ -2953,6 +3255,22 @@ describe("ConnectServer", () => {
         actionId: "example.echo",
       },
     });
+  });
+
+  it.each(["/api", "/v1"])("enforces search limit boundaries on %s", async (prefix) => {
+    const app = createTestServer([{ ...apiKeyProvider, actions: [echoAction] }]).createApp();
+
+    const accepted = await app.request(`${prefix}/actions/search?q=echo&limit=50`);
+    expect(accepted.status).toBe(200);
+
+    const rejected = await app.request(`${prefix}/actions/search?q=echo&limit=51`);
+    expect(rejected.status).toBe(400);
+    const message = "limit must be an integer between 1 and 50.";
+    await expect(rejected.json()).resolves.toMatchObject(
+      prefix === "/api"
+        ? { error: { code: "invalid_input", message } }
+        : { success: false, errorCode: "invalid_input", message },
+    );
   });
 
   it("drops stale action search index hits that are missing from the catalog", async () => {
@@ -3763,15 +4081,13 @@ describe("ConnectServer", () => {
   });
 
   it("uses the injected Node transit upload handler", async () => {
-    const uploadTransitFile = vi.fn(
-      async (): Promise<TransitFileUpload> => ({
-        fileId: `${"a".repeat(32)}.txt`,
-        downloadUrl: `http://localhost:3000/api/files/${"a".repeat(32)}.txt`,
-        sizeBytes: 6,
-        name: "streamed.txt",
-        mimeType: "text/plain",
-      }),
-    );
+    const uploadTransitFile = vi.fn(async (): Promise<TransitFileUpload> => ({
+      fileId: `${"a".repeat(32)}.txt`,
+      downloadUrl: `http://localhost:3000/api/files/${"a".repeat(32)}.txt`,
+      sizeBytes: 6,
+      name: "streamed.txt",
+      mimeType: "text/plain",
+    }));
     const app = createTestServer([apiKeyProvider], { uploadTransitFile }).createApp();
 
     const response = await app.request("/api/files", { method: "POST", body: "stream" });
@@ -3923,6 +4239,25 @@ describe("ConnectServer", () => {
   });
 });
 
+it.each(["missing", "unreadable"])("handles %s definitions in runtime catalog responses", async (state) => {
+  const catalog = createCatalogStore([catalogOnlyProvider]);
+  vi.spyOn(catalog, "getAction").mockImplementation(async () => {
+    if (state === "unreadable") throw new Error("private catalog file path");
+    return undefined;
+  });
+  const app = createTestServer([catalogOnlyProvider], { catalog }).createApp();
+  for (const path of [
+    `/v1/actions?service=${catalogOnlyProvider.service}`,
+    `/v1/actions/${catalogOnlyProvider.actions[0]!.id}`,
+  ]) {
+    const response = await app.request(path);
+    expect(response.status).toBe(state === "missing" ? 404 : 500);
+    const body = await response.json();
+    expect(body.errorCode).toBe(state === "missing" ? "unknown_action" : "internal_error");
+    expect(JSON.stringify(body)).not.toContain("private catalog file path");
+  }
+});
+
 interface TestAuthOptions {
   adminToken?: string;
   runtimeToken?: string;
@@ -3930,6 +4265,7 @@ interface TestAuthOptions {
 }
 
 interface CreateTestServerOptions {
+  catalog?: CatalogStore;
   marketplace?: MarketplaceService;
   auth?: TestAuthOptions;
   publicOrigin?: string;
@@ -3946,15 +4282,19 @@ interface CreateTestServerOptions {
   uploadTransitFile?: (request: Request) => Promise<TransitFileUpload>;
   secretCodec?: ISecretCodec;
   allowedCustomOAuth?: string[];
+  oauthCloseDelaySeconds?: number;
   oauthResultOrigins?: string[];
+  eventVerifyToken?: string;
 }
 
 function createTestServer(providers: ProviderDefinition[], options: CreateTestServerOptions = {}): ConnectServer {
   const requestDatabase = new SqliteRuntimeDatabase(":memory:");
   requestDatabases.push(requestDatabase);
-  const catalog = createCatalogStore(providers, {
-    executableActionIds: ["example.echo"],
-  });
+  const catalog =
+    options.catalog ??
+    createCatalogStore(providers, {
+      executableActionIds: ["example.echo"],
+    });
   const providerLoader: IProviderLoader = options.providerLoader ?? new EmptyProviderLoader();
   const idempotency = options.idempotency ?? new MemoryIdempotencyStore();
   const runtimeTokens = options.runtimeTokens ?? new RuntimeTokenService(new MemoryRuntimeTokenStore());
@@ -4025,7 +4365,9 @@ function createTestServer(providers: ProviderDefinition[], options: CreateTestSe
     actionPolicy: options.actionPolicy,
     actionSearch: options.actionSearch,
     logger: options.logger,
+    oauthCloseDelaySeconds: options.oauthCloseDelaySeconds,
     oauthResultOrigins: options.oauthResultOrigins,
+    eventVerifyToken: options.eventVerifyToken,
   });
 }
 
