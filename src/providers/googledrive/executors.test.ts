@@ -31,7 +31,14 @@ afterEach(() => {
 describe("Google Drive files.get", () => {
   it("returns metadata when alt is omitted", async () => {
     const requests = stubGoogleResponses([
-      Response.json({ id: "drive-file-1", name: "notes.txt", mimeType: "text/plain", size: "6" }),
+      Response.json({
+        id: "drive-file-1",
+        name: "notes.txt",
+        mimeType: "text/plain",
+        size: "6",
+        md5Checksum: "8b1a9953c4611296a827abf8c47804d7",
+        headRevisionId: "revision-1",
+      }),
     ]);
 
     const result = await executeGet({ fileId: "drive-file-1" });
@@ -45,6 +52,8 @@ describe("Google Drive files.get", () => {
         webViewLink: null,
         createdTime: null,
         modifiedTime: null,
+        md5Checksum: "8b1a9953c4611296a827abf8c47804d7",
+        headRevisionId: "revision-1",
         sizeBytes: 6,
         driveId: null,
       },
@@ -52,6 +61,8 @@ describe("Google Drive files.get", () => {
     expect(requests).toHaveLength(1);
     expect(requests[0]?.url.pathname).toBe("/drive/v3/files/drive-file-1");
     expect(requests[0]?.url.searchParams.get("alt")).toBeNull();
+    expect(requests[0]?.url.searchParams.get("fields")).toContain("md5Checksum");
+    expect(requests[0]?.url.searchParams.get("fields")).toContain("headRevisionId");
   });
 
   it("downloads a blob file with shared-drive and abuse acknowledgement parameters", async () => {
@@ -183,13 +194,13 @@ describe("Google Drive files.get", () => {
   });
 });
 
-describe("Google Drive files.list sharing capability", () => {
+describe("Google Drive files.list sharing and tree observations", () => {
   /// The projection is the whole mechanism: `fields` is an allow-list, so a
   /// member dropped here is a field Drive never sends and no amount of
   /// downstream mapping can recover. Asserted on the request rather than only
   /// on the row, because a row test passes on a fixture that was never asked
   /// for.
-  it("asks Drive for ownedByMe and the canShare capability", async () => {
+  it("projects sharing, shortcut, and search-completeness observations", async () => {
     const requests = stubGoogleResponses([Response.json({ files: [], nextPageToken: null })]);
 
     await executeList({});
@@ -197,18 +208,37 @@ describe("Google Drive files.list sharing capability", () => {
     const fields = requests[0]?.url.searchParams.get("fields") ?? "";
     expect(fields).toContain("ownedByMe");
     expect(fields).toContain("capabilities(canShare)");
+    expect(fields).toContain("sharedWithMeTime");
+    expect(fields).toContain("shortcutDetails(targetId,targetMimeType,targetResourceKey)");
+    expect(fields).toContain("incompleteSearch");
+    expect(fields).toContain("md5Checksum");
+    expect(fields).toContain("headRevisionId");
   });
 
-  it("passes both through when Drive answers them", async () => {
+  it("preserves reported sharing, shortcut, and binary-content observations", async () => {
     stubGoogleResponses([
       Response.json({
+        incompleteSearch: true,
         files: [
           {
             id: "folder-1",
-            name: "Owned folder",
-            mimeType: "application/vnd.google-apps.folder",
+            name: "Shared shortcut",
+            mimeType: "application/vnd.google-apps.shortcut",
             ownedByMe: true,
             capabilities: { canShare: true },
+            sharedWithMeTime: "2026-10-25T12:00:00Z",
+            shortcutDetails: {
+              targetId: "target-1",
+              targetMimeType: "application/vnd.google-apps.folder",
+              targetResourceKey: "resource-key-1",
+            },
+          },
+          {
+            id: "binary-1",
+            name: "notes.txt",
+            mimeType: "text/plain",
+            md5Checksum: "8b1a9953c4611296a827abf8c47804d7",
+            headRevisionId: "revision-1",
           },
         ],
       }),
@@ -220,6 +250,17 @@ describe("Google Drive files.list sharing capability", () => {
     const file = (result.output as { files: Record<string, unknown>[] }).files[0]!;
     expect(file.ownedByMe).toBe(true);
     expect(file.capabilities).toEqual({ canShare: true });
+    expect(file.sharedWithMeTime).toBe("2026-10-25T12:00:00Z");
+    expect(file.shortcutDetails).toEqual({
+      targetId: "target-1",
+      targetMimeType: "application/vnd.google-apps.folder",
+      targetResourceKey: "resource-key-1",
+    });
+    expect(result.output).toMatchObject({ incompleteSearch: true });
+    expect((result.output as { files: Record<string, unknown>[] }).files[1]).toMatchObject({
+      md5Checksum: "8b1a9953c4611296a827abf8c47804d7",
+      headRevisionId: "revision-1",
+    });
   });
 
   /// `false` is a real answer and must survive: it is the whole point of the
@@ -228,6 +269,7 @@ describe("Google Drive files.list sharing capability", () => {
   it("keeps a negative answer rather than dropping it", async () => {
     stubGoogleResponses([
       Response.json({
+        incompleteSearch: false,
         files: [
           {
             id: "folder-2",
@@ -245,6 +287,7 @@ describe("Google Drive files.list sharing capability", () => {
     const file = (result.output as { files: Record<string, unknown>[] }).files[0]!;
     expect(file.ownedByMe).toBe(false);
     expect(file.capabilities).toEqual({ canShare: false });
+    expect(result.output).toMatchObject({ incompleteSearch: false });
   });
 
   /// "Drive did not say" is not "the caller may not share". A default would
@@ -261,6 +304,12 @@ describe("Google Drive files.list sharing capability", () => {
     const file = (result.output as { files: Record<string, unknown>[] }).files[0]!;
     expect(file).not.toHaveProperty("ownedByMe");
     expect(file).not.toHaveProperty("capabilities");
+    const serialized = JSON.parse(JSON.stringify(result.output));
+    expect(serialized).not.toHaveProperty("incompleteSearch");
+    expect(serialized.files[0]).not.toHaveProperty("sharedWithMeTime");
+    expect(serialized.files[0]).not.toHaveProperty("shortcutDetails");
+    expect(serialized.files[0]).not.toHaveProperty("md5Checksum");
+    expect(serialized.files[0]).not.toHaveProperty("headRevisionId");
   });
 });
 
