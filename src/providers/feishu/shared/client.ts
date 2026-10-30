@@ -199,6 +199,14 @@ export async function readFeishuErrorResponse(response: Response): Promise<Provi
   return normalizeFeishuError({ phase: "execute", response, rawText, envelope });
 }
 
+/** Detect monthly quota envelopes while preserving other successful proxy responses. */
+export function readFeishuQuotaError(response: Response, data: unknown): ProviderRequestError | undefined {
+  const envelope = optionalRecord(data);
+  if (!envelope || envelope.code === 0) return undefined;
+  const error = normalizeFeishuError({ phase: "execute", response, rawText: "", envelope });
+  return error.code === "quota_exhausted" ? error : undefined;
+}
+
 function appendQuery(url: URL, query: FeishuJsonRequestInput["query"]) {
   if (!query) {
     return;

@@ -33,7 +33,7 @@ import { createFeishuAttendanceActionHandlers } from "./shared/attendance-runtim
 import { createFeishuBaseAdvancedActionHandlers } from "./shared/base-advanced-runtime.ts";
 import { createFeishuBaseActionHandlers } from "./shared/base-runtime.ts";
 import { createFeishuCalendarActionHandlers } from "./shared/calendar-runtime.ts";
-import { createFeishuJsonRequest, readFeishuErrorResponse } from "./shared/client.ts";
+import { createFeishuJsonRequest, readFeishuErrorResponse, readFeishuQuotaError } from "./shared/client.ts";
 import { feishuCloud } from "./shared/cloud.ts";
 import { createFeishuContactActionHandlers } from "./shared/contact-runtime.ts";
 import { createFeishuDocsActionHandlers } from "./shared/docs-runtime.ts";
@@ -208,10 +208,11 @@ export function feishuProxyDefinition(service: string, cloud: FeishuCloud): Prov
     auth: { type: "oauth_bearer" },
     async readError(response) {
       const error = await readFeishuErrorResponse(response);
-      return error.code === "quota_exhausted" || error.code === "rate_limited"
+      return error.code === "quota_exhausted"
         ? error
         : new ProviderRequestError(response.status, error.message, error.details);
     },
+    readResponseError: readFeishuQuotaError,
     skipDnsValidation: true,
     customizeRequest({ headers }) {
       headers.set("accept", "application/json");

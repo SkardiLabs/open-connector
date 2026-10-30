@@ -245,7 +245,7 @@ describe("Feishu and Lark quota errors", () => {
     });
   });
 
-  it.each([400, 429])("preserves quota pacing for a proxy HTTP %i response", async (status) => {
+  it.each([200, 400, 429])("preserves quota pacing for a proxy HTTP %i response", async (status) => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async () =>
@@ -268,6 +268,72 @@ describe("Feishu and Lark quota errors", () => {
     ).resolves.toMatchObject({
       ok: false,
       error: { code: "quota_exhausted", details: { status: 429, details: { retryAfterSeconds: 172800 } } },
+    });
+  });
+
+  it.each([
+    [99991661, 401],
+    [99991679, 403],
+  ])("keeps native authorization code %i ahead of HTTP 429", async (code, status) => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ code, msg: "Unauthorized" }, { status: 429 })),
+    );
+    const context: ExecutionContext = { getCredential: async () => oauthCredential() };
+    for (const [service, executors] of [
+      ["feishu", feishuExecutors],
+      ["lark", larkExecutors],
+    ] as const) {
+      await expect(executors[`${service}.get_current_user`]!({}, context)).resolves.toMatchObject({
+        ok: false,
+        error: { code: "authorization_failed", details: { status } },
+      });
+    }
+  });
+
+  it.each([200, 400, 429])("keeps short-limit proxy envelopes on the existing HTTP %i path", async (status) => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ code: 99991400, msg: "frequency limit" }, { status })),
+    );
+    const result = await larkProxy(
+      { endpoint: "/im/v1/chats", method: "GET" },
+      {
+        getCredential: async () => oauthCredential(),
+      },
+    );
+    expect(result).toMatchObject(
+      status === 200
+        ? { ok: true, response: { status: 200, data: { code: 99991400 } } }
+        : { ok: false, error: { code: status === 400 ? "invalid_input" : "rate_limited", details: { status } } },
+    );
+  });
+
+  it("preserves successful binary proxy responses during quota inspection", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(new Uint8Array([0, 255, 1, 2, 128]), {
+            headers: { "content-type": "application/octet-stream" },
+          }),
+      ),
+    );
+    await expect(
+      larkProxy(
+        { endpoint: "/drive/v1/files/x/download", method: "GET" },
+        {
+          getCredential: async () => oauthCredential(),
+        },
+      ),
+    ).resolves.toEqual({
+      ok: true,
+      response: {
+        status: 200,
+        headers: { "content-type": "application/octet-stream" },
+        bodyEncoding: "base64",
+        data: "AP8BAoA=",
+      },
     });
   });
 

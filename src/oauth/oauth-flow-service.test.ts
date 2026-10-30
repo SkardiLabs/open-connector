@@ -1262,6 +1262,8 @@ describe("OAuthFlowService", () => {
   });
 
   it("stores the token returned by a provider OAuth runtime", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-01T00:00:00.000Z"));
     let callbackParameters: Record<string, string> | undefined;
     let callbackQuery: string | undefined;
     let callbackState: string | undefined;

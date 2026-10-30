@@ -242,21 +242,22 @@ async function feishuApiRequest(input: FeishuApiRequestInput): Promise<Record<st
   if (!response.ok || code !== 0) {
     const message = optionalString(envelope.msg) ?? `Feishu request failed (HTTP ${response.status}).`;
     const detailedMessage = code ? `Feishu ${code}: ${message}` : message;
-    const rateLimitError = mapFeishuRateLimitError({
-      response,
-      providerCode: code,
-      message: detailedMessage,
-      details: { providerStatus: response.status, providerCode: code },
-    });
-    if (rateLimitError) throw rateLimitError;
+    const authorizationFailed = feishuCredentialErrorCodes.has(code) || feishuScopeErrorCodes.has(code);
+    if (!authorizationFailed) {
+      const rateLimitError = mapFeishuRateLimitError({
+        response,
+        providerCode: code,
+        message: detailedMessage,
+        details: { providerStatus: response.status, providerCode: code },
+      });
+      if (rateLimitError) throw rateLimitError;
+    }
     const status = mapFeishuErrorStatus(response.status, code);
     throw new ProviderRequestError(
       status,
       detailedMessage,
       undefined,
-      feishuCredentialErrorCodes.has(code) || feishuScopeErrorCodes.has(code)
-        ? "authorization_failed"
-        : "provider_error",
+      authorizationFailed ? "authorization_failed" : "provider_error",
     );
   }
 
