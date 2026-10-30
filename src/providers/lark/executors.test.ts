@@ -2,9 +2,9 @@ import type { ExecutionContext, ResolvedCredential } from "../../core/types.ts";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { credentialValidators as feishuValidators, executors as feishuExecutors } from "../feishu/executors.ts";
-import { requestFeishuMultipart, withFeishuRawResponse } from "../feishu/shared/client.ts";
+import { createFeishuJsonRequest, requestFeishuMultipart, withFeishuRawResponse } from "../feishu/shared/client.ts";
 import { feishuCloud, larkCloud } from "../feishu/shared/cloud.ts";
-import { credentialValidators as larkValidators, executors as larkExecutors } from "./executors.ts";
+import { credentialValidators as larkValidators, executors as larkExecutors, proxy as larkProxy } from "./executors.ts";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -101,5 +101,191 @@ describe("Lark actions reuse Feishu handlers against Lark's API host", () => {
       );
       expect(urls).toEqual([`${cloud.openBaseUrl}/im/v1/files`, `${cloud.openBaseUrl}/drive/v1/files/x/download`]);
     }
+  });
+});
+
+describe("Feishu and Lark quota errors", () => {
+  it.each([200, 400, 429])(
+    "keeps monthly quota exhaustion distinct on HTTP %i for native and shared actions",
+    async (status) => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () =>
+          Response.json(
+            { code: 99991403, msg: "This month's API call quota has been exceeded" },
+            { status, headers: { "x-ogw-ratelimit-reset": "172800", "retry-after": "3" } },
+          ),
+        ),
+      );
+      const context: ExecutionContext = { getCredential: async () => oauthCredential() };
+      for (const [service, executors] of [
+        ["feishu", feishuExecutors],
+        ["lark", larkExecutors],
+      ] as const) {
+        for (const name of ["get_current_user", "list_chats"]) {
+          const result = await executors[`${service}.${name}`]!({}, context);
+          expect(result).toMatchObject({
+            ok: false,
+            error: {
+              code: "quota_exhausted",
+              details: {
+                status: 429,
+                details: { providerStatus: status, providerCode: 99991403, retryAfterSeconds: 172800 },
+              },
+            },
+          });
+        }
+      }
+    },
+  );
+
+  it.each([
+    [200, 99991400],
+    [400, 99991400],
+    [429, 0],
+  ])("keeps short limits rate_limited on HTTP %i with code %i", async (status, code) => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json(
+          { code, msg: "request trigger frequency limit" },
+          { status, headers: { "x-ogw-ratelimit-reset": "73" } },
+        ),
+      ),
+    );
+    const context: ExecutionContext = { getCredential: async () => oauthCredential() };
+    for (const name of ["get_current_user", "list_chats"]) {
+      await expect(larkExecutors[`lark.${name}`]!({}, context)).resolves.toMatchObject({
+        ok: false,
+        error: { code: "rate_limited", details: { status: 429, details: { retryAfterSeconds: 73 } } },
+      });
+    }
+  });
+
+  it.each(["invalid", "0", "-1", "1.5", "Wed, 21 Oct 2026 07:28:00 GMT", "9007199254740992"])(
+    "falls back to Retry-After for invalid gateway delay %s",
+    async (reset) => {
+      const request = createFeishuJsonRequest({
+        openBaseUrl: larkCloud.openBaseUrl,
+        accessToken: "t",
+        fetcher: async () =>
+          Response.json(
+            { code: 99991403 },
+            {
+              status: 400,
+              headers: { "x-ogw-ratelimit-reset": reset, "retry-after": "73" },
+            },
+          ),
+      });
+      await expect(request({ path: "/im/v1/chats" })).rejects.toMatchObject({
+        code: "quota_exhausted",
+        details: { retryAfterSeconds: 73 },
+      });
+    },
+  );
+
+  it("preserves a large gateway delay as seconds without interpreting it as a timestamp", async () => {
+    const request = createFeishuJsonRequest({
+      openBaseUrl: larkCloud.openBaseUrl,
+      accessToken: "t",
+      fetcher: async () =>
+        Response.json(
+          { code: 99991403 },
+          {
+            headers: { "x-ogw-ratelimit-reset": "1793491200" },
+          },
+        ),
+    });
+    await expect(request({ path: "/im/v1/chats" })).rejects.toMatchObject({
+      code: "quota_exhausted",
+      details: { retryAfterSeconds: 1793491200 },
+    });
+  });
+
+  it("keeps quota exhaustion when the provider supplies no usable retry delay", async () => {
+    const request = createFeishuJsonRequest({
+      openBaseUrl: larkCloud.openBaseUrl,
+      accessToken: "t",
+      fetcher: async () =>
+        Response.json(
+          { code: 99991403 },
+          {
+            headers: { "x-ogw-ratelimit-reset": "invalid", "retry-after": "invalid" },
+          },
+        ),
+    });
+    await expect(request({ path: "/im/v1/chats" })).rejects.toMatchObject({
+      status: 429,
+      code: "quota_exhausted",
+      details: { retryAfterSeconds: undefined },
+    });
+  });
+
+  it("preserves quota pacing on multipart uploads and failed raw downloads", async () => {
+    const input = {
+      openBaseUrl: larkCloud.openBaseUrl,
+      accessToken: "t",
+      fetcher: async () =>
+        Response.json(
+          { code: 99991403 },
+          {
+            status: 400,
+            headers: { "x-ogw-ratelimit-reset": "172800" },
+          },
+        ),
+      path: "/im/v1/files",
+    };
+    await expect(requestFeishuMultipart({ ...input, body: new FormData() })).rejects.toMatchObject({
+      code: "quota_exhausted",
+      details: { retryAfterSeconds: 172800 },
+    });
+    await expect(withFeishuRawResponse(input, async () => undefined)).rejects.toMatchObject({
+      code: "quota_exhausted",
+      details: { retryAfterSeconds: 172800 },
+    });
+  });
+
+  it.each([400, 429])("preserves quota pacing for a proxy HTTP %i response", async (status) => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json(
+          { code: 99991403 },
+          {
+            status,
+            headers: { "x-ogw-ratelimit-reset": "172800" },
+          },
+        ),
+      ),
+    );
+    await expect(
+      larkProxy(
+        { endpoint: "/im/v1/chats", method: "GET" },
+        {
+          getCredential: async () => oauthCredential(),
+        },
+      ),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: "quota_exhausted", details: { status: 429, details: { retryAfterSeconds: 172800 } } },
+    });
+  });
+
+  it("keeps a proxy's ordinary forbidden response an authorization failure", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ code: 99999999, msg: "Forbidden" }, { status: 403 })),
+    );
+    await expect(
+      larkProxy(
+        { endpoint: "/im/v1/chats", method: "GET" },
+        {
+          getCredential: async () => oauthCredential(),
+        },
+      ),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: "authorization_failed", details: { status: 403 } },
+    });
   });
 });

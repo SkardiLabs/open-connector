@@ -9,6 +9,7 @@ export const providerErrorCodes = [
   "insufficient_credit",
   "invalid_input",
   "provider_error",
+  "quota_exhausted",
   "rate_limited",
 ] as const;
 

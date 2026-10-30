@@ -313,6 +313,7 @@ function mapExecutionErrorStatus(
       "authorization_failed",
       "connection_not_found",
       "rate_limited",
+      "quota_exhausted",
       "provider_error",
     ].includes(code ?? "")
   )
@@ -334,7 +335,7 @@ function mapExecutionErrorStatus(
   if (code === "authorization_failed" || code === "connection_not_allowed") {
     return 403;
   }
-  if (code === "rate_limited") {
+  if (code === "rate_limited" || code === "quota_exhausted") {
     return 429;
   }
   return 400;

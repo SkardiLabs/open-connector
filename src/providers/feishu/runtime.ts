@@ -3,6 +3,7 @@ import type { OAuthProviderContext } from "../provider-executors.ts";
 
 import { compactObject, optionalObjectArray, optionalRecord, optionalString } from "../../core/cast.ts";
 import { ProviderRequestError, readProviderJsonBody, requiredInputString } from "../provider-runtime.ts";
+import { mapFeishuRateLimitError } from "./shared/rate-limit.ts";
 
 // Feishu returns HTTP 200 with a non-zero `code` for most failures, so map the
 // well-known auth codes to their real meaning instead of a generic 502. This
@@ -240,10 +241,18 @@ async function feishuApiRequest(input: FeishuApiRequestInput): Promise<Record<st
   const code = envelope.code;
   if (!response.ok || code !== 0) {
     const message = optionalString(envelope.msg) ?? `Feishu request failed (HTTP ${response.status}).`;
+    const detailedMessage = code ? `Feishu ${code}: ${message}` : message;
+    const rateLimitError = mapFeishuRateLimitError({
+      response,
+      providerCode: code,
+      message: detailedMessage,
+      details: { providerStatus: response.status, providerCode: code },
+    });
+    if (rateLimitError) throw rateLimitError;
     const status = mapFeishuErrorStatus(response.status, code);
     throw new ProviderRequestError(
       status,
-      code ? `Feishu ${code}: ${message}` : message,
+      detailedMessage,
       undefined,
       feishuCredentialErrorCodes.has(code) || feishuScopeErrorCodes.has(code)
         ? "authorization_failed"

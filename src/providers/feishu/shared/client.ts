@@ -1,7 +1,13 @@
 import type { TransitFileWriter } from "../../../core/types.ts";
 
 import { optionalRecord, optionalString } from "../../../core/cast.ts";
-import { createProviderTimeout, ProviderRequestError, providerUserAgent } from "../../provider-runtime.ts";
+import {
+  createProviderTimeout,
+  ProviderRequestError,
+  providerUserAgent,
+  readProviderErrorTextBody,
+} from "../../provider-runtime.ts";
+import { mapFeishuRateLimitError } from "./rate-limit.ts";
 
 export type FeishuIdentity = "user" | "tenant";
 
@@ -61,7 +67,6 @@ interface FeishuEnvelope {
   readonly data?: unknown;
 }
 
-const feishuRateLimitedErrorCodes = new Set([11232, 11233, 11247, 230020, 230047, 99991400, 1000004, 1000005]);
 const feishuCredentialExpiredErrorCodes = new Set([
   4001, 10005, 10012, 10013, 10014, 10015, 20002, 20005, 20013, 20014, 99991543, 99991661, 99991663, 99991664, 99991665,
   99991668, 99991671, 99991677,
@@ -92,7 +97,7 @@ export function createFeishuJsonRequest(input: CreateFeishuJsonRequestInput): Fe
       if (!response.ok || code !== 0) {
         throw normalizeFeishuError({
           phase: input.phase ?? "execute",
-          status: response.status,
+          response,
           rawText,
           envelope,
         });
@@ -131,7 +136,7 @@ export async function requestFeishuMultipart(input: FeishuMultipartRequestInput)
     if (!response.ok || code !== 0) {
       throw normalizeFeishuError({
         phase: "execute",
-        status: response.status,
+        response,
         rawText,
         envelope,
       });
@@ -166,19 +171,7 @@ export async function withFeishuRawResponse<T>(
       signal: timeout.signal,
     });
     if (!response.ok) {
-      const rawText = await response.text();
-      let envelope: FeishuEnvelope = {};
-      try {
-        envelope = readFeishuEnvelope(rawText);
-      } catch {
-        // Raw download endpoints may return a non-JSON error body.
-      }
-      throw normalizeFeishuError({
-        phase: "execute",
-        status: response.status,
-        rawText,
-        envelope,
-      });
+      throw await readFeishuErrorResponse(response);
     }
     return await consume(response);
   } catch (error) {
@@ -192,6 +185,18 @@ export async function withFeishuRawResponse<T>(
   } finally {
     timeout.cleanup();
   }
+}
+
+/** Parse failed downloads and proxy requests through the same Feishu error mapping as actions. */
+export async function readFeishuErrorResponse(response: Response): Promise<ProviderRequestError> {
+  const rawText = await readProviderErrorTextBody(response, "Feishu error response");
+  let envelope: FeishuEnvelope = {};
+  try {
+    envelope = readFeishuEnvelope(rawText);
+  } catch {
+    // Raw download endpoints may return a non-JSON error body.
+  }
+  return normalizeFeishuError({ phase: "execute", response, rawText, envelope });
 }
 
 function appendQuery(url: URL, query: FeishuJsonRequestInput["query"]) {
@@ -246,24 +251,29 @@ function preserveOkrId(key: string, value: unknown, context?: { source?: string 
 
 function normalizeFeishuError(input: {
   readonly phase: "validate" | "execute";
-  readonly status: number;
+  readonly response: Response;
   readonly rawText: string;
   readonly envelope: FeishuEnvelope;
 }) {
+  const status = input.response.status;
   const code = typeof input.envelope.code === "number" ? input.envelope.code : null;
   const providerMessage = optionalString(input.envelope.msg);
-  const message = providerMessage ?? (input.rawText || `Feishu request failed with status ${input.status}`);
+  const message = providerMessage ?? (input.rawText || `Feishu request failed with status ${status}`);
   const detailedMessage = code ? `Feishu ${code}: ${message}` : message;
   const errorData = {
-    providerStatus: input.status,
+    providerStatus: status,
     providerCode: code,
   };
 
-  if (input.status === 429 || (code != null && feishuRateLimitedErrorCodes.has(code))) {
-    return new ProviderRequestError(429, detailedMessage, errorData);
-  }
+  const rateLimitError = mapFeishuRateLimitError({
+    response: input.response,
+    providerCode: code,
+    message: detailedMessage,
+    details: errorData,
+  });
+  if (rateLimitError) return rateLimitError;
   if (input.phase === "validate") {
-    if (input.status >= 500) {
+    if (status >= 500) {
       return new ProviderRequestError(502, detailedMessage, errorData);
     } else {
       return new ProviderRequestError(400, detailedMessage, errorData);
@@ -275,13 +285,8 @@ function normalizeFeishuError(input: {
   if (code != null && feishuScopeMissingErrorCodes.has(code)) {
     return new ProviderRequestError(403, detailedMessage, errorData);
   }
-  if (input.status === 400 || input.status === 404 || input.status === 422 || code === 230001) {
-    return new ProviderRequestError(input.status || 400, detailedMessage, errorData);
+  if (status === 400 || status === 404 || status === 422 || code === 230001) {
+    return new ProviderRequestError(status || 400, detailedMessage, errorData);
   }
-  return new ProviderRequestError(
-    input.status >= 400 ? input.status : 502,
-    detailedMessage,
-    errorData,
-    "provider_error",
-  );
+  return new ProviderRequestError(status >= 400 ? status : 502, detailedMessage, errorData, "provider_error");
 }
