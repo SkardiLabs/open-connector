@@ -8,6 +8,8 @@ const service = "googledrive";
 
 // Shared by every action that returns normalizeDriveFile's metadata shape.
 const fileTreeObservationProperties: Record<string, JsonSchema> = {
+  md5Checksum: s.string("The content's MD5 checksum, when Drive reports it. Only available for binary files."),
+  headRevisionId: s.string("The head revision ID, when Drive reports it. Only available for binary files."),
   sharedWithMeTime: s.string("When the file was shared with the authenticated user, when Drive reports it."),
   shortcutDetails: s.object("The shortcut target observed by Drive. Absent for ordinary files or when not returned.", {
     targetId: s.string("The ID of the shortcut target."),

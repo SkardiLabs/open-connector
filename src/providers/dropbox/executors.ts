@@ -27,7 +27,12 @@ import {
   readProviderProxyResponse,
   toProviderProxyError,
 } from "../provider-proxy.ts";
-import { createProviderFetch, ProviderRequestError, providerResponseError, providerUserAgent } from "../provider-runtime.ts";
+import {
+  createProviderFetch,
+  ProviderRequestError,
+  providerResponseError,
+  providerUserAgent,
+} from "../provider-runtime.ts";
 
 const dropboxApiBaseUrl = "https://api.dropboxapi.com/2";
 const dropboxContentBaseUrl = "https://content.dropboxapi.com/2";
