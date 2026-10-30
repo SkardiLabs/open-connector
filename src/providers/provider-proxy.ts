@@ -101,6 +101,8 @@ export interface ProviderProxyDefinition {
   customizeRequest?: (input: ProviderProxyRequestCustomizationInput) => Promise<void> | void;
   /** Parse a failed HTTP response using the same provider error rules as actions. */
   readError?: (response: Response) => Promise<ProviderRequestError>;
+  /** Inspect a decoded successful HTTP response for provider business errors. */
+  readResponseError?: (response: Response, data: unknown) => ProviderRequestError | undefined;
   /** Provider-specific credential/signature headers that redirects must not forward cross-origin. */
   sensitiveHeaders?: readonly string[];
   /** Exact code-controlled origins that `customizeRequest` may select in addition to the resolved base origin. */
@@ -406,10 +408,10 @@ export function defineProviderProxy(input: ProviderProxyDefinition): ProviderPro
           );
         }
 
-        return {
-          ok: true,
-          response: await readProviderProxyResponse(response, { maxBytes: input.maxResponseBytes }),
-        };
+        const proxyResponse = await readProviderProxyResponse(response, { maxBytes: input.maxResponseBytes });
+        const responseError = input.readResponseError?.(response, proxyResponse.data);
+        if (responseError) throw responseError;
+        return { ok: true, response: proxyResponse };
       } catch (error) {
         // Only the local budget becomes the shared 504 timeout; a caller abort stays an abort.
         if (error instanceof ProviderRequestError || !timeout.didTimeout()) {

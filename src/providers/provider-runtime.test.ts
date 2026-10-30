@@ -39,7 +39,13 @@ afterEach(() => {
 describe("ProviderRequestError", () => {
   it("restricts explicit codes to the provider vocabulary", () => {
     expectTypeOf<ConstructorParameters<typeof ProviderRequestError>[3]>().toEqualTypeOf<
-      "authorization_failed" | "insufficient_credit" | "invalid_input" | "provider_error" | "rate_limited" | undefined
+      | "authorization_failed"
+      | "insufficient_credit"
+      | "invalid_input"
+      | "provider_error"
+      | "quota_exhausted"
+      | "rate_limited"
+      | undefined
     >();
     expectTypeOf<ProviderRequestError["code"]>().toEqualTypeOf<ConstructorParameters<typeof ProviderRequestError>[3]>();
   });
