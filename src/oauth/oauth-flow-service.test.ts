@@ -1598,6 +1598,13 @@ it("reuses the installed app for identity-only consent and leaves the source bin
     oauthAuthorizationId: started.state,
     linkOnly: { clientFromConnection: "binding_accepted", connectionVersionId: "accepted-version" },
   });
+  await expect(
+    services.flow.startAuthorization({
+      service: "example",
+      connectionName: "link_from_temporary",
+      linkOnly: { ...linkOnly, clientFromConnection: "link_once" },
+    }),
+  ).rejects.toMatchObject({ code: "invalid_input" });
   await services.connections.disconnect("example", "link_once");
   expect((await services.connections.listManagedConnections()).map((row) => row.connectionName)).toEqual([
     "binding_accepted",

@@ -363,6 +363,10 @@ export function createOpenApiDocument(options: OpenApiDocumentOptions = {}): Ope
         type: "array",
         items: { $ref: "#/components/schemas/ConnectionSummary" },
       },
+      [
+        queryParameter("service", "Optional provider service identifier."),
+        queryParameter("connectionName", "Optional exact local connection alias."),
+      ],
     ),
     "/api/connections/{service}": createConnectionPath(),
     "/api/oauth/configs": getOperation("OAuth", "List local OAuth client configurations.", {
@@ -1612,6 +1616,7 @@ function createOAuthAuthorizationPath(): Record<string, unknown> {
           ),
         ),
         400: jsonResponse({ $ref: "#/components/schemas/ErrorResponse" }),
+        403: jsonResponse({ $ref: "#/components/schemas/ErrorResponse" }),
         404: jsonResponse({ $ref: "#/components/schemas/ErrorResponse" }),
       },
     },
@@ -1661,11 +1666,17 @@ function createOAuthConfigPath(): Record<string, unknown> {
   };
 }
 
-function getOperation(tag: string, summary: string, schema: JsonSchema): Record<string, unknown> {
+function getOperation(
+  tag: string,
+  summary: string,
+  schema: JsonSchema,
+  parameters?: unknown[],
+): Record<string, unknown> {
   return {
     get: {
       tags: [tag],
       summary,
+      parameters,
       responses: {
         200: jsonResponse(schema),
         404: jsonResponse({ $ref: "#/components/schemas/ErrorResponse" }),

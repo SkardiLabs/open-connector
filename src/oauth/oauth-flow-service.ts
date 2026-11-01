@@ -184,8 +184,8 @@ export class OAuthFlowService {
       throw new OAuthFlowError("invalid_input", "The temporary link alias already exists.");
     }
     const credential = await this.connections.getCredential(input.service, link.clientFromConnection);
-    if (!credential || credential.authType !== "oauth2") {
-      throw new OAuthFlowError("invalid_input", "The installed connection is not a local OAuth app.");
+    if (!credential || credential.authType !== "oauth2" || credential.metadata.linkOnly !== undefined) {
+      throw new OAuthFlowError("invalid_input", "The source must be an installed local OAuth connection.");
     }
     const config =
       readOAuthClientConfigMetadata(input.service, credential.metadata) ??
