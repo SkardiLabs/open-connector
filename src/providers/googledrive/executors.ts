@@ -5,7 +5,7 @@ import type { ProviderActionHandlers } from "../provider-executors.ts";
 import type { OAuthProviderContext } from "../provider-executors.ts";
 
 import { randomUUID } from "node:crypto";
-import { requiredRawString, requiredString } from "../../core/cast.ts";
+import { optionalStringArray, requiredRawString, requiredString } from "../../core/cast.ts";
 import { storeResponseInTransit } from "../../core/request.ts";
 import { defineProviderProxy, providerProxyEndpointPrefixes } from "../provider-proxy.ts";
 import { ProviderRequestError, providerResponseError } from "../provider-runtime.ts";
@@ -72,6 +72,8 @@ const driveFileFields = [
   "modifiedTime",
   "md5Checksum",
   "headRevisionId",
+  "inheritedPermissionsDisabled",
+  "permissionIds",
   "size",
   "driveId",
   "parents",
@@ -827,6 +829,8 @@ function normalizeDriveFile(payload: Record<string, unknown>) {
     modifiedTime: optionalString(payload.modifiedTime) ?? null,
     md5Checksum: optionalString(payload.md5Checksum),
     headRevisionId: optionalString(payload.headRevisionId),
+    inheritedPermissionsDisabled: optionalBoolean(payload.inheritedPermissionsDisabled),
+    permissionIds: optionalStringArray(payload.permissionIds),
     sizeBytes: parseSizeBytes(payload.size),
     driveId: optionalString(payload.driveId) ?? null,
     sharedWithMeTime: optionalString(payload.sharedWithMeTime),

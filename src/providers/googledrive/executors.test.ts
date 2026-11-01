@@ -38,6 +38,8 @@ describe("Google Drive files.get", () => {
         size: "6",
         md5Checksum: "8b1a9953c4611296a827abf8c47804d7",
         headRevisionId: "revision-1",
+        inheritedPermissionsDisabled: true,
+        permissionIds: ["permission-1", "permission-2"],
       }),
     ]);
 
@@ -54,6 +56,8 @@ describe("Google Drive files.get", () => {
         modifiedTime: null,
         md5Checksum: "8b1a9953c4611296a827abf8c47804d7",
         headRevisionId: "revision-1",
+        inheritedPermissionsDisabled: true,
+        permissionIds: ["permission-1", "permission-2"],
         sizeBytes: 6,
         driveId: null,
       },
@@ -63,6 +67,8 @@ describe("Google Drive files.get", () => {
     expect(requests[0]?.url.searchParams.get("alt")).toBeNull();
     expect(requests[0]?.url.searchParams.get("fields")).toContain("md5Checksum");
     expect(requests[0]?.url.searchParams.get("fields")).toContain("headRevisionId");
+    expect(requests[0]?.url.searchParams.get("fields")).toContain("inheritedPermissionsDisabled");
+    expect(requests[0]?.url.searchParams.get("fields")).toContain("permissionIds");
   });
 
   it("downloads a blob file with shared-drive and abuse acknowledgement parameters", async () => {
@@ -213,6 +219,8 @@ describe("Google Drive files.list sharing and tree observations", () => {
     expect(fields).toContain("incompleteSearch");
     expect(fields).toContain("md5Checksum");
     expect(fields).toContain("headRevisionId");
+    expect(fields).toContain("inheritedPermissionsDisabled");
+    expect(fields).toContain("permissionIds");
   });
 
   it("preserves reported sharing, shortcut, and binary-content observations", async () => {
@@ -239,6 +247,8 @@ describe("Google Drive files.list sharing and tree observations", () => {
             mimeType: "text/plain",
             md5Checksum: "8b1a9953c4611296a827abf8c47804d7",
             headRevisionId: "revision-1",
+            inheritedPermissionsDisabled: true,
+            permissionIds: ["permission-1"],
           },
         ],
       }),
@@ -260,6 +270,8 @@ describe("Google Drive files.list sharing and tree observations", () => {
     expect((result.output as { files: Record<string, unknown>[] }).files[1]).toMatchObject({
       md5Checksum: "8b1a9953c4611296a827abf8c47804d7",
       headRevisionId: "revision-1",
+      inheritedPermissionsDisabled: true,
+      permissionIds: ["permission-1"],
     });
   });
 
@@ -277,6 +289,8 @@ describe("Google Drive files.list sharing and tree observations", () => {
             mimeType: "application/vnd.google-apps.folder",
             ownedByMe: false,
             capabilities: { canShare: false },
+            inheritedPermissionsDisabled: false,
+            permissionIds: [],
           },
         ],
       }),
@@ -287,6 +301,8 @@ describe("Google Drive files.list sharing and tree observations", () => {
     const file = (result.output as { files: Record<string, unknown>[] }).files[0]!;
     expect(file.ownedByMe).toBe(false);
     expect(file.capabilities).toEqual({ canShare: false });
+    expect(file.inheritedPermissionsDisabled).toBe(false);
+    expect(file.permissionIds).toEqual([]);
     expect(result.output).toMatchObject({ incompleteSearch: false });
   });
 
@@ -310,6 +326,52 @@ describe("Google Drive files.list sharing and tree observations", () => {
     expect(serialized.files[0]).not.toHaveProperty("shortcutDetails");
     expect(serialized.files[0]).not.toHaveProperty("md5Checksum");
     expect(serialized.files[0]).not.toHaveProperty("headRevisionId");
+    expect(serialized.files[0]).not.toHaveProperty("inheritedPermissionsDisabled");
+    expect(serialized.files[0]).not.toHaveProperty("permissionIds");
+  });
+
+  it.each([
+    { inheritedPermissionsDisabled: true, permissionIds: ["permission-1"] },
+    { inheritedPermissionsDisabled: false, permissionIds: [] },
+    {},
+    { inheritedPermissionsDisabled: null, permissionIds: null },
+  ])("preserves optional ACL observations in change events: %j", async (observations) => {
+    const requests = stubGoogleResponses([
+      Response.json({
+        changes: [
+          {
+            fileId: "file-1",
+            removed: false,
+            file: {
+              id: "file-1",
+              name: "notes.txt",
+              mimeType: "text/plain",
+              ...observations,
+            },
+          },
+        ],
+        newStartPageToken: "next-token",
+      }),
+    ]);
+    const result = await executeAction(
+      provider.actions.find((action) => action.name === "changes.list")!,
+      executors["googledrive.changes.list"],
+      { pageToken: "start-token" },
+      { getCredential: async () => oauthCredential },
+    );
+    expect(result.ok).toBe(true);
+    const serialized = JSON.parse(JSON.stringify(result.output));
+    const file = serialized.changes[0].file;
+    for (const key of ["inheritedPermissionsDisabled", "permissionIds"] as const) {
+      if (key in observations && observations[key] !== null) {
+        expect(file[key]).toEqual(observations[key]);
+      } else {
+        expect(file).not.toHaveProperty(key);
+      }
+    }
+    const fields = requests[0]?.url.searchParams.get("fields") ?? "";
+    expect(fields).toContain("inheritedPermissionsDisabled");
+    expect(fields).toContain("permissionIds");
   });
 });
 
