@@ -104,7 +104,8 @@ export interface OAuthFlowServiceOptions {
 export interface IOAuthStateStore {
   /** Deletes states whose creation timestamp is earlier than the cutoff. */
   deleteCreatedBefore(cutoff: string): Promise<void>;
-  set(state: OAuthAuthorizationState): Promise<void>;
+  /** False when retirement superseded the state or a temporary alias is already occupied. */
+  set(state: OAuthAuthorizationState): Promise<boolean>;
   take(state: string): Promise<OAuthAuthorizationState | undefined>;
 }
 
@@ -141,7 +142,9 @@ export class OAuthFlowService {
     const linked = input.linkOnly ? await this.resolveLinkOnly(input) : undefined;
     const { pending, authorizationUrl } = await this.prepareAuthorization(input, linked);
     await this.states.deleteCreatedBefore(new Date(Date.now() - this.stateMaxAgeMs).toISOString());
-    await this.states.set(pending);
+    const accepted = await this.states.set(pending);
+    if (pending.linkOnly && !accepted)
+      throw new OAuthFlowError("invalid_input", "The temporary link alias is already reserved or retired.");
     return { authorizationUrl, state: pending.state };
   }
 

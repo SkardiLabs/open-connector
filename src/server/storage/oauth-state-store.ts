@@ -31,6 +31,12 @@ export class SqlOAuthStateStore implements IOAuthStateStore {
         await new SqlConnectionStore(this.transaction, this.codec).delete(
           expired.service,
           normalizeConnectionName(expired.connectionName),
+          {
+            state: row.state as string,
+            value: row.value as string,
+            cutoff,
+            retirementGeneration: expired.retirementGeneration,
+          },
         );
       } else {
         await this.transaction([
@@ -40,26 +46,45 @@ export class SqlOAuthStateStore implements IOAuthStateStore {
     }
   }
 
-  async set(state: OAuthAuthorizationState): Promise<void> {
+  async set(state: OAuthAuthorizationState): Promise<boolean> {
     const connectionName = normalizeConnectionName(state.connectionName);
     const value = await this.codec.encode(JSON.stringify(state));
     const fence = retirementMatches(state.service, connectionName, state.retirementGeneration);
-    await this.transaction([
+    const [, , [accepted]] = await this.transaction([
       initializeRetirement(state.service, connectionName, state.retirementGeneration),
       lockRetirement(state.service, connectionName, state.retirementGeneration),
       {
         sql: `insert into oauth_states (state, value, created_at, service, connection_name)
         select ?, ?, ?, ?, ? where ${fence.sql}
+        ${state.linkOnly && !state.cleanupOnly ? "and not exists (select 1 from oauth_states where service = ? and connection_name = ?) and not exists (select 1 from connections where service = ? and connection_name = ?)" : ""}
         on conflict(state) do update set value = excluded.value, created_at = excluded.created_at,
-          service = excluded.service, connection_name = excluded.connection_name`,
-        values: [state.state, value, state.createdAt, state.service, connectionName, ...fence.values],
+          service = excluded.service, connection_name = excluded.connection_name returning state`,
+        values: [
+          state.state,
+          value,
+          state.createdAt,
+          state.service,
+          connectionName,
+          ...fence.values,
+          ...(state.linkOnly && !state.cleanupOnly
+            ? [state.service, connectionName, state.service, connectionName]
+            : []),
+        ],
       },
     ]);
+    return accepted !== undefined;
   }
 
   async take(state: string): Promise<OAuthAuthorizationState | undefined> {
     const [[row]] = await this.transaction([
-      { sql: "delete from oauth_states where state = ? returning value", values: [state] },
+      state.startsWith("link_")
+        ? {
+            // Keep the existing cleanup artifact as the alias reservation while
+            // exchanging the token; ordinary popup take remains destructive.
+            sql: "update oauth_states set state = ? where state = ? returning value",
+            values: [`cleanup:${state}`, state],
+          }
+        : { sql: "delete from oauth_states where state = ? returning value", values: [state] },
     ]);
     return row ? (JSON.parse(await this.codec.decode(row.value as string)) as OAuthAuthorizationState) : undefined;
   }

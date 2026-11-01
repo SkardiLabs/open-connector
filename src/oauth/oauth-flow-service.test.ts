@@ -1341,6 +1341,7 @@ interface CreateServicesOptions {
   allowedCustomOAuth?: string[];
   secretCodec?: ISecretCodec;
   oauthRuntime?: ProviderOAuthRuntime;
+  database?: SqliteRuntimeDatabase;
 }
 
 function createServices(
@@ -1350,16 +1351,16 @@ function createServices(
   clientConfigs: OAuthClientConfigService;
   connections: ConnectionService;
   flow: OAuthFlowService;
-  states: MemoryOAuthStateStore;
+  states: IOAuthStateStore;
 } {
-  const requestDatabase = new SqliteRuntimeDatabase(":memory:");
+  const requestDatabase = options.database ?? new SqliteRuntimeDatabase(":memory:");
   requestDatabases.push(requestDatabase);
   const catalog = createCatalogStore(providers);
   const providerLoader = new EmptyProviderLoader(options.oauthRuntime, options.validators);
   const connections = new ConnectionService({
     catalog,
     providerLoader,
-    store: new MemoryConnectionStore(),
+    store: options.database?.connectionStore ?? new MemoryConnectionStore(),
   });
   const clientConfigs = new OAuthClientConfigService({
     catalog,
@@ -1367,7 +1368,7 @@ function createServices(
     store: new MemoryOAuthClientConfigStore(),
   });
 
-  const states = new MemoryOAuthStateStore();
+  const states = options.database?.oauthStateStore ?? new MemoryOAuthStateStore();
   return {
     clientConfigs,
     connections,
@@ -1506,13 +1507,23 @@ class MemoryOAuthStateStore implements IOAuthStateStore {
     }
   }
 
-  async set(state: OAuthAuthorizationState): Promise<void> {
+  async set(state: OAuthAuthorizationState): Promise<boolean> {
+    if (
+      state.linkOnly &&
+      !state.cleanupOnly &&
+      [...this.states.values()].some(
+        (stored) => stored.service === state.service && stored.connectionName === state.connectionName,
+      )
+    )
+      return false;
     this.states.set(state.state, state);
+    return true;
   }
 
   async take(state: string): Promise<OAuthAuthorizationState | undefined> {
     const value = this.states.get(state);
     this.states.delete(state);
+    if (value?.linkOnly && state.startsWith("link_")) this.states.set(`cleanup:${state}`, value);
     return value;
   }
 }
@@ -1557,6 +1568,7 @@ it("reuses the installed app for identity-only consent and leaves the source bin
   };
   const services = createServices([provider], {
     secretCodec: new AesGcmSecretCodec("link-test-key"),
+    database: new SqliteRuntimeDatabase(":memory:"),
     linkReturnOrigins: ["https://gateway.example"],
   });
   await services.connections.setOAuthCredential(
@@ -1581,7 +1593,22 @@ it("reuses the installed app for identity-only consent and leaves the source bin
     returnUri: "https://gateway.example/links/example/callback",
     returnState: "signed-gateway-state",
   };
-  const started = await services.flow.startAuthorization({ service: "example", connectionName: "link_once", linkOnly });
+  const starts = await Promise.allSettled(
+    [0, 1].map(() =>
+      services.flow.startAuthorization({
+        service: "example",
+        connectionName: "link_once",
+        linkOnly,
+      }),
+    ),
+  );
+  expect(starts.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+  expect(starts.filter((result) => result.status === "rejected")).toHaveLength(1);
+  const started = (
+    starts.find((result) => result.status === "fulfilled") as PromiseFulfilledResult<
+      Awaited<ReturnType<OAuthFlowService["startAuthorization"]>>
+    >
+  ).value;
   const url = new URL(started.authorizationUrl);
   expect(url.searchParams.get("client_id")).toBe("accepted-app");
   expect(url.searchParams.get("scope")).toBe("identity");
@@ -1589,7 +1616,35 @@ it("reuses the installed app for identity-only consent and leaves the source bin
     "fetch",
     vi.fn(async () => Response.json({ access_token: "temporary-token", token_type: "Bearer" })),
   );
-  const completed = await services.flow.completeAuthorization({ state: started.state, code: "provider-code" });
+  // Pause after take() and before the cleanup write. The same SQL state row
+  // must still reserve this alias while the real token exchange is in flight.
+  let arrived!: () => void;
+  let release!: () => void;
+  const waiting = new Promise<void>((resolve) => {
+    arrived = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const set = services.states.set.bind(services.states);
+  const paused = vi.spyOn(services.states, "set").mockImplementation(async (state) => {
+    if (state.cleanupOnly) {
+      arrived();
+      await gate;
+    }
+    return set(state);
+  });
+  const completing = services.flow.completeAuthorization({ state: started.state, code: "provider-code" });
+  await waiting;
+  try {
+    await expect(
+      services.flow.startAuthorization({ service: "example", connectionName: "link_once", linkOnly }),
+    ).rejects.toMatchObject({ code: "invalid_input" });
+  } finally {
+    release();
+  }
+  const completed = await completing;
+  paused.mockRestore();
   const returned = new URL(completed.returnUri!);
   expect(returned.searchParams.get("state")).toBe("signed-gateway-state");
   expect(returned.searchParams.get("code")).toBe(started.state);

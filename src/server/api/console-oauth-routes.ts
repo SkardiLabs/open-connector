@@ -447,7 +447,8 @@ export function createConsoleOAuthRoutes({
       );
     }
     if (!state || !code) {
-      if (state) await oauthFlow.rejectAuthorization(state, false);
+      const returnUri = state ? await oauthFlow.rejectAuthorization(state, false) : undefined;
+      if (returnUri) return context.redirect(returnUri);
       logger?.warn(
         {
           ...logContext,

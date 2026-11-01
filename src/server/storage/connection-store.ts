@@ -8,6 +8,14 @@ import { HttpRequestError } from "../api/http-utils.ts";
 import { initializeRetirement, lockRetirement, retirementMatches } from "./connection-retirement.ts";
 import { queueSaasConnections, readSaasConnection } from "./saas-project-store.ts";
 
+/** Exact expired authorization selected before decoding; retirement rechecks it under its lock. */
+export interface ExpiredOAuthState {
+  state: string;
+  value: string;
+  cutoff: string;
+  retirementGeneration: string;
+}
+
 /** Connection writes share the request transaction so replacing/deleting remote references cannot lose cleanup work. */
 export class SqlConnectionStore implements IConnectionStore {
   private readonly transaction: RequestTransaction;
@@ -158,41 +166,72 @@ export class SqlConnectionStore implements IConnectionStore {
     return row !== undefined;
   }
 
-  async delete(service: string, connectionName: string): Promise<void> {
+  async delete(service: string, connectionName: string, expected?: ExpiredOAuthState): Promise<void> {
+    const generation = crypto.randomUUID();
+    const fence = expected ? retirementMatches(service, connectionName, generation) : { sql: "1 = 1", values: [] };
+    const deletable =
+      "not exists (select 1 from trigger_subscriptions where connection_id = connections.id and mode <> 'resource-set' and status in ('active', 'deleting'))";
     const retired = "not exists (select 1 from connections where service = ? and connection_name = ?)";
     const results = await this.transaction([
       initializeRetirement(service, connectionName, crypto.randomUUID()),
+      expected
+        ? lockRetirement(service, connectionName, expected.retirementGeneration)
+        : { sql: "select 1", values: [] },
+      expected
+        ? {
+            // Claim only the exact still-expired state. The new ordinary retirement
+            // generation gates every following deletion in this same transaction.
+            sql: `update connection_retirements set generation = ? where service = ? and connection_name = ? and generation = ?
+          and exists (select 1 from oauth_states where state = ? and value = ? and created_at < ?)
+          and not exists (select 1 from connections where service = ? and connection_name = ? and not (${deletable}))`,
+            values: [
+              generation,
+              service,
+              connectionName,
+              expected.retirementGeneration,
+              expected.state,
+              expected.value,
+              expected.cutoff,
+              service,
+              connectionName,
+            ],
+          }
+        : {
+            sql: "update connection_retirements set generation = generation where service = ? and connection_name = ?",
+            values: [service, connectionName],
+          },
       {
-        sql: "update connection_retirements set generation = generation where service = ? and connection_name = ?",
-        values: [service, connectionName],
+        sql: `update connections set revision = revision where service = ? and connection_name = ? and ${fence.sql}`,
+        values: [service, connectionName, ...fence.values],
       },
+      queueSaasConnections(`service = ? and connection_name = ? and ${fence.sql}`, [
+        service,
+        connectionName,
+        ...fence.values,
+      ]),
       {
-        sql: "update connections set revision = revision where service = ? and connection_name = ?",
-        values: [service, connectionName],
+        sql: `delete from connections where service = ? and connection_name = ? and ${fence.sql} and ${deletable}`,
+        values: [service, connectionName, ...fence.values],
       },
-      queueSaasConnections("service = ? and connection_name = ?", [service, connectionName]),
+      expected
+        ? { sql: "select 1", values: [] }
+        : {
+            sql: `update connection_retirements set generation = ? where service = ? and connection_name = ? and ${retired}`,
+            values: [generation, service, connectionName, service, connectionName],
+          },
       {
-        sql: `delete from connections where service = ? and connection_name = ? and not exists
-        (select 1 from trigger_subscriptions where connection_id = connections.id and mode <> 'resource-set' and status in ('active', 'deleting'))`,
-        values: [service, connectionName],
-      },
-      {
-        sql: `update connection_retirements set generation = ? where service = ? and connection_name = ? and ${retired}`,
-        values: [crypto.randomUUID(), service, connectionName, service, connectionName],
-      },
-      {
-        sql: `delete from oauth_states where service = ? and connection_name = ? and ${retired}`,
-        values: [service, connectionName, service, connectionName],
+        sql: `delete from oauth_states where service = ? and connection_name = ? and ${fence.sql} and ${retired}`,
+        values: [service, connectionName, ...fence.values, service, connectionName],
       },
       {
         sql: `update connection_requests set phase = 'completed', status = 'failed', error_code = 'connection_retired',
           error_message = 'The connection was disconnected during authorization.', value = null, updated_at = ?
-          where kind = 'local' and service = ? and connection_name = ? and phase in ('pending', 'processing') and ${retired}`,
-        values: [Date.now(), service, connectionName, service, connectionName],
+          where kind = 'local' and service = ? and connection_name = ? and phase in ('pending', 'processing') and ${fence.sql} and ${retired}`,
+        values: [Date.now(), service, connectionName, ...fence.values, service, connectionName],
       },
       {
-        sql: "select id from connections where service = ? and connection_name = ?",
-        values: [service, connectionName],
+        sql: `select id from connections where service = ? and connection_name = ? and ${fence.sql}`,
+        values: [service, connectionName, ...fence.values],
       },
     ]);
     if (results.at(-1)![0])
