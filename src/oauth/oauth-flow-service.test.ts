@@ -1585,6 +1585,11 @@ it("reuses the installed app for identity-only consent and leaves the source bin
     },
     "binding_accepted",
   );
+  await services.clientConfigs.upsertConfig({
+    service: "example",
+    clientId: "accepted-app",
+    clientSecret: "app-secret",
+  });
   const linkOnly = {
     clientFromConnection: "binding_accepted",
     connectionAlias: "selected",
@@ -1609,6 +1614,21 @@ it("reuses the installed app for identity-only consent and leaves the source bin
       Awaited<ReturnType<OAuthFlowService["startAuthorization"]>>
     >
   ).value;
+  await expect(
+    services.flow.startAuthorization({ service: "example", connectionName: "link_once" }),
+  ).rejects.toMatchObject({ code: "invalid_input" });
+  await expect(
+    services.flow.startConnectionRequest({ service: "example", connectionName: "link_once", owner: "tester" }),
+  ).rejects.toMatchObject({ code: "invalid_input" });
+  const ordinaryRequest = await services.flow.startConnectionRequest({
+    service: "example",
+    connectionName: "link_requested",
+    owner: "tester",
+  });
+  await expect(
+    services.flow.startAuthorization({ service: "example", connectionName: "link_requested", linkOnly }),
+  ).rejects.toMatchObject({ code: "invalid_input" });
+  await services.flow.rejectAuthorization(ordinaryRequest.stateHandle, false);
   const url = new URL(started.authorizationUrl);
   expect(url.searchParams.get("client_id")).toBe("accepted-app");
   expect(url.searchParams.get("scope")).toBe("identity");
@@ -1666,6 +1686,89 @@ it("reuses the installed app for identity-only consent and leaves the source bin
   ]);
   await expect(services.flow.completeAuthorization({ state: started.state, code: "replay" })).rejects.toMatchObject({
     code: "invalid_oauth_state",
+  });
+  // A normal user may keep an alias named link_* when no identity state owns it.
+  const normal = await services.flow.startAuthorization({ service: "example", connectionName: "link_normal" });
+  await services.flow.completeAuthorization({ state: normal.state, code: "normal-code" });
+  expect((await services.connections.getCredential("example", "link_normal"))?.authType).toBe("oauth2");
+  for (const reason of ["access_denied", "server_error", "temporarily_unavailable"]) {
+    const pending = await services.flow.startAuthorization({
+      service: "example",
+      connectionName: `link_${reason}`,
+      linkOnly,
+    });
+    const uri = await services.flow.rejectAuthorization(pending.state, reason === "access_denied", reason);
+    expect(new URL(uri!).searchParams.get("error")).toBe(reason);
+  }
+  const expired = await services.flow.startAuthorization({
+    service: "example",
+    connectionName: "link_expired",
+    linkOnly,
+  });
+  const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 16 * 60_000);
+  try {
+    await expect(
+      services.flow.completeAuthorization({ state: expired.state, code: "expired-code" }),
+    ).rejects.toMatchObject({ code: "expired", returnUri: expect.stringContaining("error=expired") });
+  } finally {
+    clock.mockRestore();
+  }
+  expect(await services.connections.hasStoredConnection("example", "link_expired")).toBe(false);
+  expect(await services.states.take(`cleanup:${expired.state}`)).toBeUndefined();
+  // An ordinary popup that already consumed its state cannot publish over
+  // an identity reservation created while the token response was in flight.
+  const popup = await services.flow.startAuthorization({ service: "example", connectionName: "link_publish" });
+  let tokenArrived!: () => void;
+  let sendToken!: () => void;
+  const tokenWaiting = new Promise<void>((resolve) => {
+    tokenArrived = resolve;
+  });
+  const tokenGate = new Promise<void>((resolve) => {
+    sendToken = resolve;
+  });
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => {
+      tokenArrived();
+      await tokenGate;
+      return Response.json({ access_token: "ordinary-token", token_type: "Bearer" });
+    }),
+  );
+  const popupCompletion = services.flow.completeAuthorization({ state: popup.state, code: "ordinary-code" });
+  await tokenWaiting;
+  const reserved = await services.flow.startAuthorization({
+    service: "example",
+    connectionName: "link_publish",
+    linkOnly,
+  });
+  sendToken();
+  await expect(popupCompletion).rejects.toMatchObject({ code: "connection_reserved" });
+  expect(await services.states.take(reserved.state)).toMatchObject({ state: reserved.state });
+  const stale = await services.flow.startAuthorization({ service: "example", connectionName: "link_stale", linkOnly });
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => {
+      await services.connections.disconnect("example", "link_stale");
+      await services.connections.setOAuthCredential(
+        "example",
+        {
+          authType: "oauth2",
+          accessToken: "replacement",
+          tokenType: "Bearer",
+          profile: { accountId: "replacement", displayName: "Replacement", grantedScopes: [] },
+          metadata: {},
+        },
+        "link_stale",
+      );
+      return Response.json({ access_token: "stale-token", token_type: "Bearer" });
+    }),
+  );
+  await expect(services.flow.completeAuthorization({ state: stale.state, code: "stale-code" })).rejects.toMatchObject({
+    code: "provider_error",
+    returnUri: expect.stringContaining("error=provider_error"),
+  });
+  expect(await services.connections.getCredential("example", "link_stale")).toMatchObject({
+    accessToken: "replacement",
   });
   for (const patch of [
     { requestedScopes: ["content"] },

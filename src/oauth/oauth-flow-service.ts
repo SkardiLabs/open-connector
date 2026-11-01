@@ -143,7 +143,7 @@ export class OAuthFlowService {
     const { pending, authorizationUrl } = await this.prepareAuthorization(input, linked);
     await this.states.deleteCreatedBefore(new Date(Date.now() - this.stateMaxAgeMs).toISOString());
     const accepted = await this.states.set(pending);
-    if (pending.linkOnly && !accepted)
+    if (!accepted)
       throw new OAuthFlowError("invalid_input", "The temporary link alias is already reserved or retired.");
     return { authorizationUrl, state: pending.state };
   }
@@ -246,7 +246,8 @@ export class OAuthFlowService {
       returnUri: input.returnUri,
       target: input.target ? { id: input.target.id, revision: input.target.revision } : undefined,
     };
-    await this.requests.create(request);
+    if (!(await this.requests.create(request)))
+      throw new OAuthFlowError("invalid_input", "The connection alias is reserved or retired.");
     return {
       authorizationUrl,
       stateHandle: pending.state,
@@ -260,7 +261,11 @@ export class OAuthFlowService {
     return this.requests.get(id, owner);
   }
 
-  async rejectAuthorization(state: string, denied: boolean): Promise<string | undefined> {
+  async rejectAuthorization(
+    state: string,
+    denied: boolean,
+    reason: string = denied ? "access_denied" : "provider_error",
+  ): Promise<string | undefined> {
     if (state.startsWith("cleanup:")) return undefined;
     const pending = await this.requests.claim(state);
     if (!pending) {
@@ -268,7 +273,8 @@ export class OAuthFlowService {
       // Only the tagged identity flow has its own trusted return destination.
       if (state.startsWith("link_")) {
         const authorization = await this.states.take(state);
-        if (authorization?.linkOnly && !authorization.cleanupOnly) return this.linkReturn(authorization, undefined);
+        if (authorization?.linkOnly && !authorization.cleanupOnly)
+          return this.linkReturn(authorization, undefined, reason);
       }
       return undefined;
     }
@@ -379,14 +385,11 @@ export class OAuthFlowService {
     if (!pending || pending.cleanupOnly || typeof pending.retirementGeneration !== "string") {
       throw new OAuthFlowError("invalid_oauth_state", "OAuth state is missing or expired.");
     }
-    if (!request && isExpiredOAuthState(pending, this.stateMaxAgeMs)) {
-      throw new OAuthFlowError("invalid_oauth_state", "OAuth state is missing or expired.");
-    }
-
-    // Retain cleanup ownership before issuing a token. A process crash or an
-    // abandoned callback is retired by the ordinary auth-state TTL sweep.
-    if (pending.linkOnly) await this.states.set({ ...pending, state: `cleanup:${pending.state}`, cleanupOnly: true });
+    const expired = !request && isExpiredOAuthState(pending, this.stateMaxAgeMs);
     try {
+      if (expired) throw new OAuthFlowError("invalid_oauth_state", "OAuth state is missing or expired.");
+      // The retained row owns cleanup before issuing any temporary token.
+      if (pending.linkOnly) await this.states.set({ ...pending, state: `cleanup:${pending.state}`, cleanupOnly: true });
       const auth = this.clientConfigs.getOAuthDefinition(pending.service);
       const config = pending.clientConfig ?? (await this.clientConfigs.getConfig(pending.service));
       if (!config) {
@@ -515,11 +518,14 @@ export class OAuthFlowService {
       if (pending.linkOnly) {
         // The TTL owner remains if disconnect itself fails. Never redirect a
         // successful identity proof while its temporary credential survives.
-        await this.connections.disconnect(pending.service, pending.connectionName);
+        await this.connections.disconnect(pending.service, pending.connectionName, {
+          retirementGeneration: pending.retirementGeneration,
+        });
+        const reason = expired ? "expired" : "provider_error";
         throw new OAuthCallbackError(
-          "provider_error",
-          "Identity authorization failed.",
-          this.linkReturn(pending, undefined),
+          reason,
+          expired ? "Identity authorization expired." : "Identity authorization failed.",
+          this.linkReturn(pending, undefined, reason),
           error,
         );
       }
@@ -547,10 +553,14 @@ export class OAuthFlowService {
     }
   }
 
-  private linkReturn(pending: OAuthAuthorizationState, code: string | undefined): string {
+  private linkReturn(
+    pending: OAuthAuthorizationState,
+    code: string | undefined,
+    reason: string = "provider_error",
+  ): string {
     const url = new URL(pending.linkOnly!.returnUri);
     url.searchParams.set("state", pending.linkOnly!.returnState);
-    url.searchParams.set(code ? "code" : "error", code ?? "access_denied");
+    url.searchParams.set(code ? "code" : "error", code ?? reason);
     return url.toString();
   }
 

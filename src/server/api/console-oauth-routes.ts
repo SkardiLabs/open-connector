@@ -155,8 +155,13 @@ export function createConsoleOAuthRoutes({
       (async () => {
         if (!service) return connections.listConnections();
         if (!name) return connections.listConnectionsByService(service);
-        const summary = await connections.getConnectionSummary(service, name);
-        return summary ? [summary] : [];
+        try {
+          const summary = await connections.getConnectionSummary(service, name);
+          return summary ? [summary] : [];
+        } catch (error) {
+          if (error instanceof ConnectionError && error.code === "connection_not_found") return [];
+          throw error;
+        }
       })(),
     );
   });
@@ -416,7 +421,11 @@ export function createConsoleOAuthRoutes({
     const providerError = context.req.query("error");
     if (providerError) {
       const returnUri = state
-        ? await oauthFlow.rejectAuthorization(state, providerError === "access_denied")
+        ? await oauthFlow.rejectAuthorization(
+            state,
+            providerError === "access_denied",
+            oauthProviderErrorCode(providerError),
+          )
         : undefined;
       if (returnUri) return context.redirect(returnUri);
       // A runtime authorization (`POST /api/oauth/authorizations`) has no

@@ -3,7 +3,12 @@ import type { ISecretCodec } from "../secrets/secret-codec-core.ts";
 import type { RequestTransaction } from "./connection-request-store.ts";
 
 import { normalizeConnectionName } from "../../connection-service.ts";
-import { initializeRetirement, lockRetirement, retirementMatches } from "./connection-retirement.ts";
+import {
+  initializeRetirement,
+  lockRetirement,
+  retirementMatches,
+  temporaryAliasAvailable,
+} from "./connection-retirement.ts";
 import { SqlConnectionStore } from "./connection-store.ts";
 
 /** Pending OAuth state shares the same durable fence and transaction as credential retirement. */
@@ -50,13 +55,14 @@ export class SqlOAuthStateStore implements IOAuthStateStore {
     const connectionName = normalizeConnectionName(state.connectionName);
     const value = await this.codec.encode(JSON.stringify(state));
     const fence = retirementMatches(state.service, connectionName, state.retirementGeneration);
+    const reservation = temporaryAliasAvailable(state.service, connectionName, state.cleanupOnly ? state.state : "");
     const [, , [accepted]] = await this.transaction([
       initializeRetirement(state.service, connectionName, state.retirementGeneration),
       lockRetirement(state.service, connectionName, state.retirementGeneration),
       {
         sql: `insert into oauth_states (state, value, created_at, service, connection_name)
-        select ?, ?, ?, ?, ? where ${fence.sql}
-        ${state.linkOnly && !state.cleanupOnly ? "and not exists (select 1 from oauth_states where service = ? and connection_name = ?) and not exists (select 1 from connections where service = ? and connection_name = ?)" : ""}
+        select ?, ?, ?, ?, ? where ${fence.sql} and ${reservation.sql}
+        ${state.linkOnly && !state.cleanupOnly ? "and not exists (select 1 from oauth_states where service = ? and connection_name = ?) and not exists (select 1 from connections where service = ? and connection_name = ?) and not exists (select 1 from connection_requests where kind = 'local' and service = ? and connection_name = ? and phase in ('pending', 'processing') and expires_at > ?)" : ""}
         on conflict(state) do update set value = excluded.value, created_at = excluded.created_at,
           service = excluded.service, connection_name = excluded.connection_name returning state`,
         values: [
@@ -66,8 +72,17 @@ export class SqlOAuthStateStore implements IOAuthStateStore {
           state.service,
           connectionName,
           ...fence.values,
+          ...reservation.values,
           ...(state.linkOnly && !state.cleanupOnly
-            ? [state.service, connectionName, state.service, connectionName]
+            ? [
+                state.service,
+                connectionName,
+                state.service,
+                connectionName,
+                state.service,
+                connectionName,
+                state.createdAt,
+              ]
             : []),
         ],
       },

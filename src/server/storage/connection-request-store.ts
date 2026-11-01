@@ -4,7 +4,12 @@ import type { OAuthAuthorizationState } from "../../oauth/oauth-flow-service.ts"
 import type { ISecretCodec } from "../secrets/secret-codec-core.ts";
 import type { RuntimeRow } from "./runtime-sql.ts";
 
-import { initializeRetirement, lockRetirement, retirementMatches } from "./connection-retirement.ts";
+import {
+  initializeRetirement,
+  lockRetirement,
+  retirementMatches,
+  temporaryAliasAvailable,
+} from "./connection-retirement.ts";
 import { queueSaasConnections, queueSaasRequests } from "./saas-project-store.ts";
 
 export interface ConnectionRequest {
@@ -78,17 +83,22 @@ export class ConnectionRequestStore {
     this.secretCodec = secretCodec;
   }
 
-  async create(pending: PendingConnectionRequest): Promise<void> {
+  async create(pending: PendingConnectionRequest): Promise<boolean> {
     const now = Date.parse(pending.createdAt);
     const value = await this.secretCodec.encode(JSON.stringify(pending));
-    const fence = retirementMatches(pending.service, pending.connectionName, pending.retirementGeneration);
-    await this.transaction([
+    const retirement = retirementMatches(pending.service, pending.connectionName, pending.retirementGeneration);
+    const reservation = temporaryAliasAvailable(pending.service, pending.connectionName);
+    const fence = {
+      sql: `${retirement.sql} and ${reservation.sql}`,
+      values: [...retirement.values, ...reservation.values],
+    };
+    const results = await this.transaction([
       initializeRetirement(pending.service, pending.connectionName, pending.retirementGeneration),
       lockRetirement(pending.service, pending.connectionName, pending.retirementGeneration),
       ...this.retireRequests(pending.owner, pending.service, now, fence),
       {
         sql: `insert into connection_requests (id, owner, service, state, phase, status, value, expires_at, created_at, updated_at, connection_name)
-          select ?, ?, ?, ?, 'pending', 'initiated', ?, ?, ?, ?, ? where ${fence.sql}`,
+          select ?, ?, ?, ?, 'pending', 'initiated', ?, ?, ?, ?, ? where ${fence.sql} returning id`,
         values: [
           pending.connectionRequestId,
           pending.owner,
@@ -103,6 +113,7 @@ export class ConnectionRequestStore {
         ],
       },
     ]);
+    return results.at(-1)!.length > 0;
   }
 
   async get(id: string, owner: string): Promise<ConnectionRequest | undefined> {
@@ -166,7 +177,12 @@ export class ConnectionRequestStore {
         : null;
     signal?.throwIfAborted();
     const now = new Date();
-    const fence = retirementMatches(pending.service, pending.connectionName, pending.retirementGeneration);
+    const retirement = retirementMatches(pending.service, pending.connectionName, pending.retirementGeneration);
+    const reservation = temporaryAliasAvailable(pending.service, pending.connectionName);
+    const fence = {
+      sql: `${retirement.sql} and ${reservation.sql}`,
+      values: [...retirement.values, ...reservation.values],
+    };
     const active = `exists (select 1 from connection_requests where kind = 'local' and id = ? and phase = 'processing') and ${fence.sql}`;
     const write: RequestStatement = pending.target
       ? {

@@ -101,6 +101,8 @@ export interface DisconnectOptions {
    * grant at the provider, where revoking would end the one that stays.
    */
   revoke?: boolean;
+  /** Only retire the authorization generation whose callback is being cleaned up. */
+  retirementGeneration?: string;
 }
 
 export interface DisconnectedConnectionSummary {
@@ -580,7 +582,7 @@ export class ConnectionService {
         this.logger?.warn({ service, connectionName, error: describeError(error) }, "oauth token revocation skipped");
       }
     }
-    await this.store.delete(service, connectionName);
+    await this.store.delete(service, connectionName, options.retirementGeneration);
     const revoked =
       options.revoke !== true
         ? "skipped"
@@ -588,7 +590,7 @@ export class ConnectionService {
           ? "failed"
           : await this.revokeDeletedCredential(service, connectionName, stored);
     const provider = this.catalog.providers.find((provider) => provider.service === service);
-    if (provider && this.supportsAuth(provider, "no_auth")) {
+    if (options.retirementGeneration === undefined && provider && this.supportsAuth(provider, "no_auth")) {
       return { ...(await this.connectWithoutAuth(service, { connectionName })), revoked };
     }
 

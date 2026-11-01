@@ -1875,6 +1875,13 @@ describe("ConnectServer", () => {
     expect(malformed.headers.get("location")).toBe(failedReturn);
     expect(reject).toHaveBeenCalledWith("link_malformed", false);
     reject.mockRestore();
+    const providerFailure = vi
+      .spyOn(OAuthFlowService.prototype, "rejectAuthorization")
+      .mockResolvedValueOnce(failedReturn.replace("provider_error", "server_error"));
+    const failed = await app.request("/oauth/callback?state=link_failed&error=server_error");
+    expect(failed.headers.get("location")).toContain("error=server_error");
+    expect(providerFailure).toHaveBeenCalledWith("link_failed", false, "server_error");
+    providerFailure.mockRestore();
 
     // A refused authorization can never be completed afterwards.
     const late = await app.request(`/oauth/callback?state=${state}&code=example-code`);
@@ -4871,4 +4878,7 @@ it("requires an administrator bearer for installed-app identity links even on th
     body: JSON.stringify({ service: "oauth_example", connectionName: "link_once", linkOnly: {} }),
   });
   expect(response.status).toBe(403);
+  const missing = await app.request("/api/connections?service=oauth_example&connectionName=missing");
+  expect(missing.status).toBe(200);
+  await expect(missing.json()).resolves.toEqual([]);
 });

@@ -80,6 +80,10 @@ export function connectionRequestStoreTests(getDatabase: () => RuntimeDatabase):
       const request = {
         ...pending(),
         connectionName: original.connectionName,
+        retirementGeneration: await database.connectionStore.getRetirementGeneration(
+          original.service,
+          original.connectionName,
+        ),
         target: { id: original.id, revision: original.revision },
       };
       await database.connectionRequestStore.create(request);

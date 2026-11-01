@@ -46,6 +46,6 @@ export interface IConnectionStore {
   ): Promise<StoredLocalConnection | undefined>;
   set(service: string, connectionName: string, credential: ResolvedCredential): Promise<StoredLocalConnection>;
   updateCredential(input: StoredLocalConnection, refresh?: boolean): Promise<boolean>;
-  delete(service: string, connectionName: string): Promise<void>;
+  delete(service: string, connectionName: string, retirementGeneration?: string): Promise<void>;
   list(): Promise<StoredConnection[]>;
 }
