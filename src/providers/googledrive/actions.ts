@@ -8,6 +8,11 @@ const service = "googledrive";
 
 // Shared by every action that returns normalizeDriveFile's metadata shape.
 const fileTreeObservationProperties: Record<string, JsonSchema> = {
+  inheritedPermissionsDisabled: s.boolean("Whether inherited permissions are disabled, when Drive reports it."),
+  permissionIds: s.array(
+    "The permission IDs of users with access, when Drive reports them.",
+    s.string("A permission ID."),
+  ),
   md5Checksum: s.string("The content's MD5 checksum, when Drive reports it. Only available for binary files."),
   headRevisionId: s.string("The head revision ID, when Drive reports it. Only available for binary files."),
   sharedWithMeTime: s.string("When the file was shared with the authenticated user, when Drive reports it."),
