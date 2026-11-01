@@ -1339,3 +1339,43 @@ it("rolls back a SaaS reconnect and its cleanup when the terminal request write 
     database.close();
   }
 });
+
+it("expires temporary link aliases after restart and fences an in-flight credential publication", async () => {
+  const path = await createDatabasePath();
+  const first = new SqliteRuntimeDatabase(path);
+  const generation = await first.connectionStore.getRetirementGeneration("feishu", "link_once");
+  await first.oauthStateStore.set({
+    service: "feishu",
+    connectionName: "link_once",
+    retirementGeneration: generation,
+    state: "cleanup:consent",
+    cleanupOnly: true,
+    createdAt: "2026-06-30T00:00:00.000Z",
+    linkOnly: {
+      clientFromConnection: "binding_original",
+      connectionAlias: "original",
+      connectionVersionId: "version",
+      requestedScopes: ["auth:user.id:read"],
+      returnUri: "https://gateway.example/links/feishu/callback",
+      returnState: "signed-state",
+    },
+  });
+  const credential = {
+    authType: "api_key" as const,
+    apiKey: "temporary-secret",
+    values: {},
+    profile: githubProfile,
+    metadata: {},
+  };
+  await first.connectionStore.setIfCurrentGeneration("feishu", "link_once", credential, generation);
+  await first.connectionStore.set("feishu", "binding_original", credential);
+  first.close();
+  const restarted = new SqliteRuntimeDatabase(path);
+  await restarted.oauthStateStore.deleteCreatedBefore("2026-06-30T00:00:01.000Z");
+  await expect(restarted.connectionStore.get("feishu", "link_once")).resolves.toBeUndefined();
+  await expect(restarted.connectionStore.get("feishu", "binding_original")).resolves.toBeDefined();
+  await expect(
+    restarted.connectionStore.setIfCurrentGeneration("feishu", "link_once", credential, generation),
+  ).resolves.toBeUndefined();
+  restarted.close();
+});

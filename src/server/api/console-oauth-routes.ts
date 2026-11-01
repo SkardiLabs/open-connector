@@ -17,6 +17,7 @@ import {
 } from "../../core/cast.ts";
 import { OAuthClientConfigError } from "../../oauth/oauth-client-config-service.ts";
 import { OAuthCallbackError, OAuthFlowError } from "../../oauth/oauth-flow-service.ts";
+import { hasAdminBearer } from "./auth.ts";
 import {
   HttpRequestError,
   jsonError,
@@ -145,7 +146,20 @@ export function createConsoleOAuthRoutes({
     }
   };
 
-  app.get("/api/connections", async (context) => context.json(await connections.listConnections()));
+  app.get("/api/connections", async (context) => {
+    const service = optionalString(context.req.query("service"));
+    const name = readConnectionName(context);
+    if (name && !service) return jsonError(context, 400, "invalid_input", "A selected alias requires service.");
+    return writeConnectionResult(
+      context,
+      (async () => {
+        if (!service) return connections.listConnections();
+        if (!name) return connections.listConnectionsByService(service);
+        const summary = await connections.getConnectionSummary(service, name);
+        return summary ? [summary] : [];
+      })(),
+    );
+  });
 
   app.put("/api/connections/:service", async (context) => {
     const service = context.req.param("service");
@@ -313,10 +327,48 @@ export function createConsoleOAuthRoutes({
       };
       logger?.info(logContext, "oauth authorization started");
 
+      const link = optionalRecord(body.linkOnly);
+      if (body.linkOnly !== undefined && (!link || !hasAdminBearer(context))) {
+        return jsonError(context, 403, "forbidden", "Installed-app links require a trusted administrator bearer.");
+      }
       const authorization = await oauthFlow.startAuthorization({
         service,
         connectionName,
         clientConfig: readOAuthClientConfigInput(body),
+        linkOnly: link
+          ? {
+              clientFromConnection: requiredString(
+                link.clientFromConnection,
+                "clientFromConnection",
+                (message) => new OAuthFlowError("invalid_input", message),
+              ),
+              connectionAlias: requiredString(
+                link.connectionAlias,
+                "connectionAlias",
+                (message) => new OAuthFlowError("invalid_input", message),
+              ),
+              connectionVersionId: requiredString(
+                link.connectionVersionId,
+                "connectionVersionId",
+                (message) => new OAuthFlowError("invalid_input", message),
+              ),
+              returnUri: requiredString(
+                link.returnUri,
+                "returnUri",
+                (message) => new OAuthFlowError("invalid_input", message),
+              ),
+              returnState: requiredString(
+                link.returnState,
+                "returnState",
+                (message) => new OAuthFlowError("invalid_input", message),
+              ),
+              requestedScopes: requiredStringArray(
+                link.requestedScopes,
+                "requestedScopes",
+                (message) => new OAuthFlowError("invalid_input", message),
+              ),
+            }
+          : undefined,
         authorizationOptionIds: readOptionalStringArray(body, "authorizationOptionIds"),
       });
       const authorizationUrl = new URL(authorization.authorizationUrl);

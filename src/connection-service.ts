@@ -24,6 +24,7 @@ import type { IOAuthCredentialRefresher, OAuthRevocationOutcome } from "./oauth/
 import type { IProviderLoader } from "./providers/provider-loader.ts";
 
 import { ConnectionError } from "./connection-error.ts";
+import { optionalRecord, optionalString } from "./core/cast.ts";
 import { normalizeCredentialValues } from "./core/credential-fields.ts";
 import { apiKeyCredentialFields } from "./core/provider-setup.ts";
 import { CredentialResolver, isOAuthCredentialExpired } from "./credential-resolver.ts";
@@ -52,6 +53,13 @@ export interface ConnectionSummary {
   profile: CredentialProfile;
   /** Completed OAuth consent state; absent for legacy and non-OAuth connections. */
   oauthAuthorizationId?: string;
+  /** Non-secret accepted binding for a temporary identity proof. */
+  linkOnly?: {
+    clientFromConnection: string;
+    connectionAlias: string;
+    connectionVersionId: string;
+    returnState: string;
+  };
   marketplace?: { id: string; pricing: MarketplacePricing };
   saas?: StoredSaasConnection["reference"];
 }
@@ -660,6 +668,14 @@ export class ConnectionService {
     // Credential metadata also contains client secrets. Expose only this runtime-owned string.
     if (credential.authType === "oauth2" && typeof credential.metadata.oauthAuthorizationId === "string") {
       summary.oauthAuthorizationId = credential.metadata.oauthAuthorizationId;
+      const link = optionalRecord(credential.metadata.linkOnly);
+      if (link)
+        summary.linkOnly = {
+          clientFromConnection: optionalString(link.clientFromConnection) ?? "",
+          connectionAlias: optionalString(link.connectionAlias) ?? "",
+          connectionVersionId: optionalString(link.connectionVersionId) ?? "",
+          returnState: optionalString(link.returnState) ?? "",
+        };
     }
     return summary;
   }
@@ -882,6 +898,7 @@ export class ConnectionService {
         ...(validation.metadata ?? {}),
         // Provider validation cannot replace or invent completed consent provenance.
         oauthAuthorizationId: credential.metadata.oauthAuthorizationId,
+        linkOnly: credential.metadata.linkOnly,
         providerAccountVerified:
           Boolean(
             validation.profile?.accountId ??

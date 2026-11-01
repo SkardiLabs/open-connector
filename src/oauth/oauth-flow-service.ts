@@ -24,6 +24,7 @@ import {
   ProviderDispatchRequestError,
   withProviderHttpDispatchResult,
 } from "../providers/provider-runtime.ts";
+import { readOAuthClientConfigMetadata } from "./oauth-client-config-service.ts";
 import { requestAuthorizationCodeToken } from "./oauth-token.ts";
 
 /**
@@ -34,11 +35,24 @@ export type OAuthAuthorizationStart = {
   state: string;
 };
 
+export const OAUTH_STATE_MAX_AGE_MS = 15 * 60 * 1000;
+
+/** Non-secret accepted-binding receipt supplied only by the trusted gateway. */
+export interface LinkOnlyAuthorization {
+  clientFromConnection: string;
+  connectionAlias: string;
+  connectionVersionId: string;
+  requestedScopes: string[];
+  returnUri: string;
+  returnState: string;
+}
+
 export interface OAuthAuthorizationStartInput {
   service: string;
   connectionName?: string;
   clientConfig?: OAuthClientConfigInput;
   authorizationOptionIds?: string[];
+  linkOnly?: LinkOnlyAuthorization;
 }
 
 export interface OAuthAuthorizationCompleteInput {
@@ -67,6 +81,8 @@ export interface OAuthAuthorizationState {
    */
   redirectUri?: string;
   clientConfig?: OAuthClientConfig;
+  linkOnly?: LinkOnlyAuthorization;
+  cleanupOnly?: boolean;
 }
 
 export interface OAuthFlowServiceOptions {
@@ -76,6 +92,7 @@ export interface OAuthFlowServiceOptions {
   states: IOAuthStateStore;
   requests: ConnectionRequestStore;
   stateMaxAgeMs?: number;
+  linkReturnOrigins?: readonly string[];
   saasOAuth?: SaasOAuthService;
   secretCodec?: ISecretCodec;
   isCustomClientConfigAllowed?: (service: string) => boolean;
@@ -101,6 +118,7 @@ export class OAuthFlowService {
   private readonly states: IOAuthStateStore;
   private readonly requests: ConnectionRequestStore;
   private readonly stateMaxAgeMs: number;
+  private readonly linkReturnOrigins: readonly string[];
   private readonly saasOAuth?: SaasOAuthService;
   private readonly secretCodec?: ISecretCodec;
   private readonly isCustomClientConfigAllowed: (service: string) => boolean;
@@ -112,17 +130,74 @@ export class OAuthFlowService {
     this.providerLoader = input.providerLoader;
     this.states = input.states;
     this.requests = input.requests;
-    this.stateMaxAgeMs = input.stateMaxAgeMs ?? 15 * 60 * 1000;
+    this.stateMaxAgeMs = input.stateMaxAgeMs ?? OAUTH_STATE_MAX_AGE_MS;
+    this.linkReturnOrigins = input.linkReturnOrigins ?? [];
     this.secretCodec = input.secretCodec;
     this.isCustomClientConfigAllowed = input.isCustomClientConfigAllowed ?? (() => false);
   }
 
   async startAuthorization(input: OAuthAuthorizationStartInput): Promise<OAuthAuthorizationStart> {
     await this.saasOAuth?.assertLocalAuthorization(input.service);
-    const { pending, authorizationUrl } = await this.prepareAuthorization(input);
+    const linked = input.linkOnly ? await this.resolveLinkOnly(input) : undefined;
+    const { pending, authorizationUrl } = await this.prepareAuthorization(input, linked);
     await this.states.deleteCreatedBefore(new Date(Date.now() - this.stateMaxAgeMs).toISOString());
     await this.states.set(pending);
     return { authorizationUrl, state: pending.state };
+  }
+
+  private async resolveLinkOnly(input: OAuthAuthorizationStartInput): Promise<OAuthClientConfig> {
+    const link = input.linkOnly!;
+    const name = normalizeConnectionName(input.connectionName);
+    if (
+      !name.startsWith("link_") ||
+      name === normalizeConnectionName(link.clientFromConnection) ||
+      input.clientConfig ||
+      input.authorizationOptionIds
+    ) {
+      throw new OAuthFlowError("invalid_input", "A link requires a fresh temporary alias and the installed app.");
+    }
+    validateReturnUri(link.returnUri);
+    const target = new URL(link.returnUri);
+    if (
+      !this.linkReturnOrigins.includes(target.origin) ||
+      target.username ||
+      target.password ||
+      target.pathname !== `/links/${input.service}/callback` ||
+      target.search ||
+      target.hash ||
+      !link.returnState ||
+      link.returnState.length > 512 ||
+      !link.connectionAlias ||
+      !link.connectionVersionId
+    ) {
+      throw new OAuthFlowError("invalid_input", "The link return address or accepted connection receipt is invalid.");
+    }
+    const auth = this.clientConfigs.getOAuthDefinition(input.service);
+    if (!link.requestedScopes.length || link.requestedScopes.some((scope) => !auth.identityScopes?.includes(scope))) {
+      throw new OAuthFlowError("invalid_input", "Only catalog-declared identity scopes are allowed for links.");
+    }
+    if (!this.secretCodec?.encrypted) {
+      throw new OAuthFlowError("oauth_custom_app_encryption_required", "Installed-app links require encrypted state.");
+    }
+    // A new link never replaces an installed binding or a previous consent.
+    if (
+      (await this.connections.listManagedConnections()).some(
+        (row) => row.service === input.service && row.connectionName === name,
+      )
+    ) {
+      throw new OAuthFlowError("invalid_input", "The temporary link alias already exists.");
+    }
+    const credential = await this.connections.getCredential(input.service, link.clientFromConnection);
+    if (!credential || credential.authType !== "oauth2") {
+      throw new OAuthFlowError("invalid_input", "The installed connection is not a local OAuth app.");
+    }
+    const config =
+      readOAuthClientConfigMetadata(input.service, credential.metadata) ??
+      (await this.clientConfigs.getConfig(input.service));
+    if (!config || credential.metadata.oauthClientId !== config.clientId) {
+      throw new OAuthFlowError("oauth_source_mismatch", "The installed OAuth app cannot be proved.");
+    }
+    return this.clientConfigs.normalizeConfig(input.service, { ...config, requestedScopes: link.requestedScopes });
   }
 
   async startConnectionRequest(input: OAuthConnectionRequestInput): Promise<OAuthConnectionRequestStart> {
@@ -187,8 +262,13 @@ export class OAuthFlowService {
   }
 
   async rejectAuthorization(state: string, denied: boolean): Promise<string | undefined> {
+    if (state.startsWith("cleanup:")) return undefined;
     const pending = await this.requests.claim(state);
-    if (!pending) return undefined;
+    if (!pending) {
+      const authorization = await this.states.take(state);
+      if (authorization?.linkOnly && !authorization.cleanupOnly) return this.linkReturn(authorization, undefined);
+      return undefined;
+    }
     await this.requests.fail(
       pending.connectionRequestId,
       denied ? "invalid_input" : "provider_error",
@@ -209,6 +289,7 @@ export class OAuthFlowService {
    * already completed or refused by another callback).
    */
   async discardAuthorization(state: string): Promise<boolean> {
+    if (state.startsWith("cleanup:")) return false;
     return (await this.states.take(state)) !== undefined;
   }
 
@@ -233,11 +314,13 @@ export class OAuthFlowService {
     const now = new Date();
     const state = crypto.randomUUID();
     const pkceCodeVerifier = auth.pkce ? createPkceCodeVerifier() : undefined;
-    const authorizationScopes = resolveAuthorizationScopes(
-      auth,
-      input.authorizationOptionIds,
-      this.clientConfigs.getEffectiveScopes(service, config),
-    );
+    const authorizationScopes = input.linkOnly
+      ? config.requestedScopes!
+      : resolveAuthorizationScopes(
+          auth,
+          input.authorizationOptionIds,
+          this.clientConfigs.getEffectiveScopes(service, config),
+        );
     const redirectUri = this.clientConfigs.expectedRedirectUri(service, config);
     const pending: OAuthAuthorizationState = {
       service,
@@ -246,9 +329,10 @@ export class OAuthFlowService {
       state,
       createdAt: now.toISOString(),
       pkceCodeVerifier,
-      authorizationScopes: auth.authorizationOptions ? authorizationScopes : undefined,
+      authorizationScopes: input.linkOnly || auth.authorizationOptions ? authorizationScopes : undefined,
       redirectUri,
-      clientConfig: input.clientConfig ? config : undefined,
+      clientConfig: input.clientConfig || input.linkOnly ? config : undefined,
+      linkOnly: input.linkOnly,
     };
 
     const authorizationUrl = new URL(this.clientConfigs.resolveEndpointUrl(service, auth.authorizationUrl, config));
@@ -286,15 +370,19 @@ export class OAuthFlowService {
   async completeAuthorization(
     input: OAuthAuthorizationCompleteInput,
   ): Promise<{ service: string; connected: true; returnUri?: string }> {
+    if (input.state.startsWith("cleanup:")) throw new OAuthFlowError("invalid_oauth_state", "Invalid OAuth state.");
     const request = await this.requests.claim(input.state);
     const pending = request ?? (await this.states.take(input.state));
-    if (!pending || typeof pending.retirementGeneration !== "string") {
+    if (!pending || pending.cleanupOnly || typeof pending.retirementGeneration !== "string") {
       throw new OAuthFlowError("invalid_oauth_state", "OAuth state is missing or expired.");
     }
     if (!request && isExpiredOAuthState(pending, this.stateMaxAgeMs)) {
       throw new OAuthFlowError("invalid_oauth_state", "OAuth state is missing or expired.");
     }
 
+    // Retain cleanup ownership before issuing a token. A process crash or an
+    // abandoned callback is retired by the ordinary auth-state TTL sweep.
+    if (pending.linkOnly) await this.states.set({ ...pending, state: `cleanup:${pending.state}`, cleanupOnly: true });
     try {
       const auth = this.clientConfigs.getOAuthDefinition(pending.service);
       const config = pending.clientConfig ?? (await this.clientConfigs.getConfig(pending.service));
@@ -374,6 +462,7 @@ export class OAuthFlowService {
           oauthClientExtra: config.extra,
           oauthClientSecretExtra: config.secretExtra,
           oauthClientConfig: pending.clientConfig ? config : undefined,
+          linkOnly: pending.linkOnly,
         },
       };
 
@@ -413,9 +502,24 @@ export class OAuthFlowService {
       return {
         service: pending.service,
         connected: true,
-        ...(request?.returnUri ? { returnUri: callbackReturnUri(request, "success") } : {}),
+        ...(pending.linkOnly
+          ? { returnUri: this.linkReturn(pending, pending.state) }
+          : request?.returnUri
+            ? { returnUri: callbackReturnUri(request, "success") }
+            : {}),
       };
     } catch (error) {
+      if (pending.linkOnly) {
+        // The TTL owner remains if disconnect itself fails. Never redirect a
+        // successful identity proof while its temporary credential survives.
+        await this.connections.disconnect(pending.service, pending.connectionName);
+        throw new OAuthCallbackError(
+          "provider_error",
+          "Identity authorization failed.",
+          this.linkReturn(pending, undefined),
+          error,
+        );
+      }
       if (error instanceof ProviderDispatchRequestError) {
         if (!request) throw error;
         await this.requests.fail(request.connectionRequestId, "rate_limited", error.message);
@@ -438,6 +542,13 @@ export class OAuthFlowService {
       }
       throw error;
     }
+  }
+
+  private linkReturn(pending: OAuthAuthorizationState, code: string | undefined): string {
+    const url = new URL(pending.linkOnly!.returnUri);
+    url.searchParams.set("state", pending.linkOnly!.returnState);
+    url.searchParams.set(code ? "code" : "error", code ?? "access_denied");
+    return url.toString();
   }
 
   private resolveCustomClientConfig(service: string, input: OAuthClientConfigInput): OAuthClientConfig {

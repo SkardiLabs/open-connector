@@ -4,6 +4,7 @@ import type { RequestTransaction } from "./connection-request-store.ts";
 
 import { normalizeConnectionName } from "../../connection-service.ts";
 import { initializeRetirement, lockRetirement, retirementMatches } from "./connection-retirement.ts";
+import { SqlConnectionStore } from "./connection-store.ts";
 
 /** Pending OAuth state shares the same durable fence and transaction as credential retirement. */
 export class SqlOAuthStateStore implements IOAuthStateStore {
@@ -16,7 +17,27 @@ export class SqlOAuthStateStore implements IOAuthStateStore {
   }
 
   async deleteCreatedBefore(cutoff: string): Promise<void> {
-    await this.transaction([{ sql: "delete from oauth_states where created_at < ?", values: [cutoff] }]);
+    const [rows] = await this.transaction([
+      {
+        sql: "select state, value from oauth_states where created_at < ? order by created_at limit 100",
+        values: [cutoff],
+      },
+    ]);
+    for (const row of rows) {
+      const expired = JSON.parse(await this.codec.decode(row.value as string)) as OAuthAuthorizationState;
+      if (expired.linkOnly) {
+        // Same fence as explicit disconnect: an in-flight callback cannot
+        // publish after this deletion, including across process restarts.
+        await new SqlConnectionStore(this.transaction, this.codec).delete(
+          expired.service,
+          normalizeConnectionName(expired.connectionName),
+        );
+      } else {
+        await this.transaction([
+          { sql: "delete from oauth_states where state = ? and created_at < ?", values: [row.state as string, cutoff] },
+        ]);
+      }
+    }
   }
 
   async set(state: OAuthAuthorizationState): Promise<void> {

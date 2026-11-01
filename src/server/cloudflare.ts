@@ -46,6 +46,7 @@ export default {
       },
       store: database.saasProjectStore,
       requests: database.connectionRequestStore,
+      oauthStates: database.oauthStateStore,
       logger: workerLogger,
     });
     const triggerCleanup = async () => {

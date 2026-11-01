@@ -1337,6 +1337,7 @@ describe("OAuthFlowService", () => {
 interface CreateServicesOptions {
   validators?: CredentialValidators;
   stateMaxAgeMs?: number;
+  linkReturnOrigins?: readonly string[];
   allowedCustomOAuth?: string[];
   secretCodec?: ISecretCodec;
   oauthRuntime?: ProviderOAuthRuntime;
@@ -1377,6 +1378,7 @@ function createServices(
       states,
       requests: requestDatabase.connectionRequestStore,
       stateMaxAgeMs: options.stateMaxAgeMs,
+      linkReturnOrigins: options.linkReturnOrigins,
       secretCodec: options.secretCodec,
       isCustomClientConfigAllowed: (service) =>
         options.allowedCustomOAuth?.includes("*") || options.allowedCustomOAuth?.includes(service) || false,
@@ -1537,3 +1539,81 @@ it.each(["cloud_recording:read:recording", "cloud_recording:read:recording:admin
     ]);
   },
 );
+
+// Authored runtime fixture: validates the link transport, not live SaaS consent.
+it("reuses the installed app for identity-only consent and leaves the source binding intact", async () => {
+  const provider: ProviderDefinition = {
+    ...oauthProvider,
+    auth: [
+      {
+        type: "oauth2",
+        authorizationUrl: "https://example.com/authorize",
+        tokenUrl: "https://example.com/token",
+        scopes: ["identity", "content"],
+        identityScopes: ["identity"],
+        tokenEndpointAuthMethod: "client_secret_post",
+      },
+    ],
+  };
+  const services = createServices([provider], {
+    secretCodec: new AesGcmSecretCodec("link-test-key"),
+    linkReturnOrigins: ["https://gateway.example"],
+  });
+  await services.connections.setOAuthCredential(
+    "example",
+    {
+      authType: "oauth2",
+      accessToken: "installed-token",
+      profile: { accountId: "installer", displayName: "Installer", grantedScopes: ["content"] },
+      metadata: {
+        oauthClientId: "accepted-app",
+        oauthClientConfig: { clientId: "accepted-app", clientSecret: "app-secret", extra: {}, secretExtra: {} },
+      },
+    },
+    "binding_accepted",
+  );
+  const linkOnly = {
+    clientFromConnection: "binding_accepted",
+    connectionAlias: "selected",
+    connectionVersionId: "accepted-version",
+    requestedScopes: ["identity"],
+    returnUri: "https://gateway.example/links/example/callback",
+    returnState: "signed-gateway-state",
+  };
+  const started = await services.flow.startAuthorization({ service: "example", connectionName: "link_once", linkOnly });
+  const url = new URL(started.authorizationUrl);
+  expect(url.searchParams.get("client_id")).toBe("accepted-app");
+  expect(url.searchParams.get("scope")).toBe("identity");
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => Response.json({ access_token: "temporary-token", token_type: "Bearer" })),
+  );
+  const completed = await services.flow.completeAuthorization({ state: started.state, code: "provider-code" });
+  const returned = new URL(completed.returnUri!);
+  expect(returned.searchParams.get("state")).toBe("signed-gateway-state");
+  expect(returned.searchParams.get("code")).toBe(started.state);
+  expect((await services.connections.getCredential("example", "binding_accepted"))?.authType).toBe("oauth2");
+  expect(await services.connections.getConnectionSummary("example", "link_once")).toMatchObject({
+    oauthAuthorizationId: started.state,
+    linkOnly: { clientFromConnection: "binding_accepted", connectionVersionId: "accepted-version" },
+  });
+  await services.connections.disconnect("example", "link_once");
+  expect((await services.connections.listManagedConnections()).map((row) => row.connectionName)).toEqual([
+    "binding_accepted",
+  ]);
+  await expect(services.flow.completeAuthorization({ state: started.state, code: "replay" })).rejects.toMatchObject({
+    code: "invalid_oauth_state",
+  });
+  for (const patch of [
+    { requestedScopes: ["content"] },
+    { returnUri: "https://elsewhere.example/links/example/callback" },
+  ]) {
+    await expect(
+      services.flow.startAuthorization({
+        service: "example",
+        connectionName: "link_refused",
+        linkOnly: { ...linkOnly, ...patch },
+      }),
+    ).rejects.toMatchObject({ code: "invalid_input" });
+  }
+});
