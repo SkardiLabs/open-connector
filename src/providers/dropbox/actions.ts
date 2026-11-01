@@ -112,6 +112,7 @@ const dropboxMetadataSchema = s.object(
       "url",
       "expiresAt",
       "sharingInfo",
+      "hasExplicitSharedMembers",
       "linkPermissions",
     ],
   },
