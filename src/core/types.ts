@@ -143,6 +143,8 @@ export type OAuth2AuthDefinition = {
   revocationUrl?: string;
   /** Default OAuth scopes when no requestedScopes or authorization options are selected. */
   scopes: string[];
+  /** Scopes permitted for a temporary identity proof; never content defaults. */
+  identityScopes?: string[];
   /**
    * Additional scopes available for explicit selection through requestedScopes or authorization
    * options. requestedScopes replaces the default list; default scopes are not added automatically.

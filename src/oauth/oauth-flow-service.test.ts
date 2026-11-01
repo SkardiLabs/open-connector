@@ -1337,9 +1337,11 @@ describe("OAuthFlowService", () => {
 interface CreateServicesOptions {
   validators?: CredentialValidators;
   stateMaxAgeMs?: number;
+  linkReturnOrigins?: readonly string[];
   allowedCustomOAuth?: string[];
   secretCodec?: ISecretCodec;
   oauthRuntime?: ProviderOAuthRuntime;
+  database?: SqliteRuntimeDatabase;
 }
 
 function createServices(
@@ -1349,16 +1351,16 @@ function createServices(
   clientConfigs: OAuthClientConfigService;
   connections: ConnectionService;
   flow: OAuthFlowService;
-  states: MemoryOAuthStateStore;
+  states: IOAuthStateStore;
 } {
-  const requestDatabase = new SqliteRuntimeDatabase(":memory:");
+  const requestDatabase = options.database ?? new SqliteRuntimeDatabase(":memory:");
   requestDatabases.push(requestDatabase);
   const catalog = createCatalogStore(providers);
   const providerLoader = new EmptyProviderLoader(options.oauthRuntime, options.validators);
   const connections = new ConnectionService({
     catalog,
     providerLoader,
-    store: new MemoryConnectionStore(),
+    store: options.database?.connectionStore ?? new MemoryConnectionStore(),
   });
   const clientConfigs = new OAuthClientConfigService({
     catalog,
@@ -1366,7 +1368,7 @@ function createServices(
     store: new MemoryOAuthClientConfigStore(),
   });
 
-  const states = new MemoryOAuthStateStore();
+  const states = options.database?.oauthStateStore ?? new MemoryOAuthStateStore();
   return {
     clientConfigs,
     connections,
@@ -1377,6 +1379,7 @@ function createServices(
       states,
       requests: requestDatabase.connectionRequestStore,
       stateMaxAgeMs: options.stateMaxAgeMs,
+      linkReturnOrigins: options.linkReturnOrigins,
       secretCodec: options.secretCodec,
       isCustomClientConfigAllowed: (service) =>
         options.allowedCustomOAuth?.includes("*") || options.allowedCustomOAuth?.includes(service) || false,
@@ -1504,13 +1507,23 @@ class MemoryOAuthStateStore implements IOAuthStateStore {
     }
   }
 
-  async set(state: OAuthAuthorizationState): Promise<void> {
+  async set(state: OAuthAuthorizationState): Promise<boolean> {
+    if (
+      state.linkOnly &&
+      !state.cleanupOnly &&
+      [...this.states.values()].some(
+        (stored) => stored.service === state.service && stored.connectionName === state.connectionName,
+      )
+    )
+      return false;
     this.states.set(state.state, state);
+    return true;
   }
 
   async take(state: string): Promise<OAuthAuthorizationState | undefined> {
     const value = this.states.get(state);
     this.states.delete(state);
+    if (value?.linkOnly && state.startsWith("link_")) this.states.set(`cleanup:${state}`, value);
     return value;
   }
 }
@@ -1537,3 +1550,236 @@ it.each(["cloud_recording:read:recording", "cloud_recording:read:recording:admin
     ]);
   },
 );
+
+// Authored runtime fixture: validates the link transport, not live SaaS consent.
+it("reuses the installed app for identity-only consent and leaves the source binding intact", async () => {
+  const provider: ProviderDefinition = {
+    ...oauthProvider,
+    auth: [
+      {
+        type: "oauth2",
+        authorizationUrl: "https://example.com/authorize",
+        tokenUrl: "https://example.com/token",
+        scopes: ["identity", "content"],
+        identityScopes: ["identity"],
+        tokenEndpointAuthMethod: "client_secret_post",
+      },
+    ],
+  };
+  const services = createServices([provider], {
+    secretCodec: new AesGcmSecretCodec("link-test-key"),
+    database: new SqliteRuntimeDatabase(":memory:"),
+    linkReturnOrigins: ["https://gateway.example"],
+  });
+  await services.connections.setOAuthCredential(
+    "example",
+    {
+      authType: "oauth2",
+      accessToken: "installed-token",
+      tokenType: "Bearer",
+      profile: { accountId: "installer", displayName: "Installer", grantedScopes: ["content"] },
+      metadata: {
+        oauthClientId: "accepted-app",
+        oauthClientConfig: { clientId: "accepted-app", clientSecret: "app-secret", extra: {}, secretExtra: {} },
+      },
+    },
+    "binding_accepted",
+  );
+  await services.clientConfigs.upsertConfig({
+    service: "example",
+    clientId: "accepted-app",
+    clientSecret: "app-secret",
+  });
+  const linkOnly = {
+    clientFromConnection: "binding_accepted",
+    connectionAlias: "selected",
+    connectionVersionId: "accepted-version",
+    requestedScopes: ["identity"],
+    returnUri: "https://gateway.example/links/example/callback",
+    returnState: "signed-gateway-state",
+  };
+  const starts = await Promise.allSettled(
+    [0, 1].map(() =>
+      services.flow.startAuthorization({
+        service: "example",
+        connectionName: "link_once",
+        linkOnly,
+      }),
+    ),
+  );
+  expect(starts.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+  expect(starts.filter((result) => result.status === "rejected")).toHaveLength(1);
+  const started = (
+    starts.find((result) => result.status === "fulfilled") as PromiseFulfilledResult<
+      Awaited<ReturnType<OAuthFlowService["startAuthorization"]>>
+    >
+  ).value;
+  await expect(
+    services.flow.startAuthorization({ service: "example", connectionName: "link_once" }),
+  ).rejects.toMatchObject({ code: "invalid_input" });
+  await expect(
+    services.flow.startConnectionRequest({ service: "example", connectionName: "link_once", owner: "tester" }),
+  ).rejects.toMatchObject({ code: "invalid_input" });
+  const ordinaryRequest = await services.flow.startConnectionRequest({
+    service: "example",
+    connectionName: "link_requested",
+    owner: "tester",
+  });
+  await expect(
+    services.flow.startAuthorization({ service: "example", connectionName: "link_requested", linkOnly }),
+  ).rejects.toMatchObject({ code: "invalid_input" });
+  await services.flow.rejectAuthorization(ordinaryRequest.stateHandle, false);
+  const url = new URL(started.authorizationUrl);
+  expect(url.searchParams.get("client_id")).toBe("accepted-app");
+  expect(url.searchParams.get("scope")).toBe("identity");
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => Response.json({ access_token: "temporary-token", token_type: "Bearer" })),
+  );
+  // Pause after take() and before the cleanup write. The same SQL state row
+  // must still reserve this alias while the real token exchange is in flight.
+  let arrived!: () => void;
+  let release!: () => void;
+  const waiting = new Promise<void>((resolve) => {
+    arrived = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const set = services.states.set.bind(services.states);
+  const paused = vi.spyOn(services.states, "set").mockImplementation(async (state) => {
+    if (state.cleanupOnly) {
+      arrived();
+      await gate;
+    }
+    return set(state);
+  });
+  const completing = services.flow.completeAuthorization({ state: started.state, code: "provider-code" });
+  await waiting;
+  try {
+    await expect(
+      services.flow.startAuthorization({ service: "example", connectionName: "link_once", linkOnly }),
+    ).rejects.toMatchObject({ code: "invalid_input" });
+  } finally {
+    release();
+  }
+  const completed = await completing;
+  paused.mockRestore();
+  const returned = new URL(completed.returnUri!);
+  expect(returned.searchParams.get("state")).toBe("signed-gateway-state");
+  expect(returned.searchParams.get("code")).toBe(started.state);
+  expect((await services.connections.getCredential("example", "binding_accepted"))?.authType).toBe("oauth2");
+  expect(await services.connections.getConnectionSummary("example", "link_once")).toMatchObject({
+    oauthAuthorizationId: started.state,
+    linkOnly: { clientFromConnection: "binding_accepted", connectionVersionId: "accepted-version" },
+  });
+  await expect(
+    services.flow.startAuthorization({
+      service: "example",
+      connectionName: "link_from_temporary",
+      linkOnly: { ...linkOnly, clientFromConnection: "link_once" },
+    }),
+  ).rejects.toMatchObject({ code: "invalid_input" });
+  await services.connections.disconnect("example", "link_once");
+  expect((await services.connections.listManagedConnections()).map((row) => row.connectionName)).toEqual([
+    "binding_accepted",
+  ]);
+  await expect(services.flow.completeAuthorization({ state: started.state, code: "replay" })).rejects.toMatchObject({
+    code: "invalid_oauth_state",
+  });
+  // A normal user may keep an alias named link_* when no identity state owns it.
+  const normal = await services.flow.startAuthorization({ service: "example", connectionName: "link_normal" });
+  await services.flow.completeAuthorization({ state: normal.state, code: "normal-code" });
+  expect((await services.connections.getCredential("example", "link_normal"))?.authType).toBe("oauth2");
+  for (const reason of ["access_denied", "server_error", "temporarily_unavailable"]) {
+    const pending = await services.flow.startAuthorization({
+      service: "example",
+      connectionName: `link_${reason}`,
+      linkOnly,
+    });
+    const uri = await services.flow.rejectAuthorization(pending.state, reason === "access_denied", reason);
+    expect(new URL(uri!).searchParams.get("error")).toBe(reason);
+  }
+  const expired = await services.flow.startAuthorization({
+    service: "example",
+    connectionName: "link_expired",
+    linkOnly,
+  });
+  const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 16 * 60_000);
+  try {
+    await expect(
+      services.flow.completeAuthorization({ state: expired.state, code: "expired-code" }),
+    ).rejects.toMatchObject({ code: "expired", returnUri: expect.stringContaining("error=expired") });
+  } finally {
+    clock.mockRestore();
+  }
+  expect(await services.connections.hasStoredConnection("example", "link_expired")).toBe(false);
+  expect(await services.states.take(`cleanup:${expired.state}`)).toBeUndefined();
+  // An ordinary popup that already consumed its state cannot publish over
+  // an identity reservation created while the token response was in flight.
+  const popup = await services.flow.startAuthorization({ service: "example", connectionName: "link_publish" });
+  let tokenArrived!: () => void;
+  let sendToken!: () => void;
+  const tokenWaiting = new Promise<void>((resolve) => {
+    tokenArrived = resolve;
+  });
+  const tokenGate = new Promise<void>((resolve) => {
+    sendToken = resolve;
+  });
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => {
+      tokenArrived();
+      await tokenGate;
+      return Response.json({ access_token: "ordinary-token", token_type: "Bearer" });
+    }),
+  );
+  const popupCompletion = services.flow.completeAuthorization({ state: popup.state, code: "ordinary-code" });
+  await tokenWaiting;
+  const reserved = await services.flow.startAuthorization({
+    service: "example",
+    connectionName: "link_publish",
+    linkOnly,
+  });
+  sendToken();
+  await expect(popupCompletion).rejects.toMatchObject({ code: "connection_reserved" });
+  expect(await services.states.take(reserved.state)).toMatchObject({ state: reserved.state });
+  const stale = await services.flow.startAuthorization({ service: "example", connectionName: "link_stale", linkOnly });
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => {
+      await services.connections.disconnect("example", "link_stale");
+      await services.connections.setOAuthCredential(
+        "example",
+        {
+          authType: "oauth2",
+          accessToken: "replacement",
+          tokenType: "Bearer",
+          profile: { accountId: "replacement", displayName: "Replacement", grantedScopes: [] },
+          metadata: {},
+        },
+        "link_stale",
+      );
+      return Response.json({ access_token: "stale-token", token_type: "Bearer" });
+    }),
+  );
+  await expect(services.flow.completeAuthorization({ state: stale.state, code: "stale-code" })).rejects.toMatchObject({
+    code: "provider_error",
+    returnUri: expect.stringContaining("error=provider_error"),
+  });
+  expect(await services.connections.getCredential("example", "link_stale")).toMatchObject({
+    accessToken: "replacement",
+  });
+  for (const patch of [
+    { requestedScopes: ["content"] },
+    { returnUri: "https://elsewhere.example/links/example/callback" },
+  ]) {
+    await expect(
+      services.flow.startAuthorization({
+        service: "example",
+        connectionName: "link_refused",
+        linkOnly: { ...linkOnly, ...patch },
+      }),
+    ).rejects.toMatchObject({ code: "invalid_input" });
+  }
+});

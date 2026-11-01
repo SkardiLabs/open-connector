@@ -1,6 +1,7 @@
 import type { ProviderDefinition } from "../../core/types.ts";
 
 import { feishuActions, feishuOAuthScopesFor } from "./actions.ts";
+import { feishuProviderScopes } from "./scopes.ts";
 
 const service = "feishu";
 const feishuOAuthScopes = feishuOAuthScopesFor(feishuActions);
@@ -21,6 +22,7 @@ export const provider: ProviderDefinition = {
       type: "oauth2",
       authorizationUrl: "https://accounts.feishu.cn/open-apis/authen/v1/authorize",
       tokenUrl: "https://open.feishu.cn/open-apis/authen/v2/oauth/token",
+      identityScopes: [feishuProviderScopes.userIdRead],
       scopes: feishuOAuthScopes,
       tokenEndpointAuthMethod: "client_secret_post",
       // Feishu's v2 token endpoint requires an application/json body; the

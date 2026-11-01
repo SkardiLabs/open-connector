@@ -356,10 +356,18 @@ export function createOpenApiDocument(options: OpenApiDocumentOptions = {}): Ope
       type: "string",
       description: "Markdown guide for one action.",
     }),
-    "/api/connections": getOperation("Connections", "List local provider connections.", {
-      type: "array",
-      items: { $ref: "#/components/schemas/ConnectionSummary" },
-    }),
+    "/api/connections": getOperation(
+      "Connections",
+      "List local provider connections. Optional service and connectionName query parameters select one provider or alias without returning unrelated connections.",
+      {
+        type: "array",
+        items: { $ref: "#/components/schemas/ConnectionSummary" },
+      },
+      [
+        queryParameter("service", "Optional provider service identifier."),
+        queryParameter("connectionName", "Optional exact local connection alias."),
+      ],
+    ),
     "/api/connections/{service}": createConnectionPath(),
     "/api/oauth/configs": getOperation("OAuth", "List local OAuth client configurations.", {
       type: "array",
@@ -713,6 +721,19 @@ export function createOpenApiDocument(options: OpenApiDocumentOptions = {}): Ope
             service: jsonSchema.string({ description: "Provider service identifier." }),
             authType: jsonSchema.string({ description: "Connection authentication type." }),
             configured: jsonSchema.boolean({ description: "Whether the provider is connected." }),
+            linkOnly: jsonSchema.object(
+              {
+                clientFromConnection: jsonSchema.string(),
+                connectionAlias: jsonSchema.string(),
+                connectionVersionId: jsonSchema.string(),
+                returnState: jsonSchema.string(),
+              },
+              {
+                required: ["clientFromConnection", "connectionAlias", "connectionVersionId", "returnState"],
+                description:
+                  "Non-secret accepted-source receipt for a temporary identity link; omitted for ordinary connections.",
+              },
+            ),
             oauthAuthorizationId: jsonSchema.string({
               description: "Completed OAuth consent state. Omitted for legacy and non-OAuth connections.",
             }),
@@ -1523,6 +1544,28 @@ function createOAuthAuthorizationPath(): Record<string, unknown> {
                 connectionName: jsonSchema.string({
                   description: "Optional local connection name. Defaults to default.",
                 }),
+                linkOnly: jsonSchema.object(
+                  {
+                    clientFromConnection: jsonSchema.string(),
+                    connectionAlias: jsonSchema.string(),
+                    connectionVersionId: jsonSchema.string(),
+                    requestedScopes: jsonSchema.array(jsonSchema.string(), { minItems: 1 }),
+                    returnUri: jsonSchema.string(),
+                    returnState: jsonSchema.string(),
+                  },
+                  {
+                    required: [
+                      "clientFromConnection",
+                      "connectionAlias",
+                      "connectionVersionId",
+                      "requestedScopes",
+                      "returnUri",
+                      "returnState",
+                    ],
+                    description:
+                      "Trusted administrator bearer only. Reuses the installed local OAuth app for a temporary identity-only alias; return origin must be configured in OOMOL_CONNECT_OAUTH_RESULT_ORIGINS and path must be /links/<service>/callback. Temporary alias is retired by ordinary authorization expiry if abandoned.",
+                  },
+                ),
                 clientId: jsonSchema.string({ description: "Optional connection-scoped OAuth app client id." }),
                 clientSecret: jsonSchema.string({
                   description: "Optional connection-scoped OAuth app client secret.",
@@ -1573,6 +1616,7 @@ function createOAuthAuthorizationPath(): Record<string, unknown> {
           ),
         ),
         400: jsonResponse({ $ref: "#/components/schemas/ErrorResponse" }),
+        403: jsonResponse({ $ref: "#/components/schemas/ErrorResponse" }),
         404: jsonResponse({ $ref: "#/components/schemas/ErrorResponse" }),
       },
     },
@@ -1622,11 +1666,17 @@ function createOAuthConfigPath(): Record<string, unknown> {
   };
 }
 
-function getOperation(tag: string, summary: string, schema: JsonSchema): Record<string, unknown> {
+function getOperation(
+  tag: string,
+  summary: string,
+  schema: JsonSchema,
+  parameters?: unknown[],
+): Record<string, unknown> {
   return {
     get: {
       tags: [tag],
       summary,
+      parameters,
       responses: {
         200: jsonResponse(schema),
         404: jsonResponse({ $ref: "#/components/schemas/ErrorResponse" }),

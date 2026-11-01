@@ -5,8 +5,21 @@ import type { RequestTransaction } from "./connection-request-store.ts";
 import type { RuntimeRow } from "./runtime-sql.ts";
 
 import { HttpRequestError } from "../api/http-utils.ts";
-import { initializeRetirement, lockRetirement, retirementMatches } from "./connection-retirement.ts";
+import {
+  initializeRetirement,
+  lockRetirement,
+  retirementMatches,
+  temporaryAliasAvailable,
+} from "./connection-retirement.ts";
 import { queueSaasConnections, readSaasConnection } from "./saas-project-store.ts";
+
+/** Exact expired authorization selected before decoding; retirement rechecks it under its lock. */
+export interface ExpiredOAuthState {
+  state: string;
+  value: string;
+  cutoff: string;
+  retirementGeneration: string;
+}
 
 /** Connection writes share the request transaction so replacing/deleting remote references cannot lose cleanup work. */
 export class SqlConnectionStore implements IConnectionStore {
@@ -82,23 +95,38 @@ export class SqlConnectionStore implements IConnectionStore {
       retirementGeneration === undefined
         ? { sql: "1 = 1", values: [] }
         : retirementMatches(service, connectionName, retirementGeneration);
+    const authorization =
+      credential.authType === "oauth2" && credential.metadata.linkOnly !== undefined
+        ? credential.metadata.oauthAuthorizationId
+        : undefined;
+    const reservation = temporaryAliasAvailable(
+      service,
+      connectionName,
+      typeof authorization === "string" ? `cleanup:${authorization}` : "",
+    );
     const value = await this.codec.encode(JSON.stringify(credential));
-    const [[accepted], , , [row]] = await this.transaction([
+    const [, [accepted], [available], , , [row]] = await this.transaction([
+      initializeRetirement(service, connectionName, crypto.randomUUID()),
       retirementGeneration === undefined
-        ? { sql: "select 1", values: [] }
+        ? {
+            sql: "update connection_retirements set generation = generation where service = ? and connection_name = ? returning generation",
+            values: [service, connectionName],
+          }
         : lockRetirement(service, connectionName, retirementGeneration),
+      { sql: `select 1 where ${reservation.sql}`, values: reservation.values },
       {
         sql: "update connections set revision = revision where service = ? and connection_name = ?",
         values: [service, connectionName],
       },
-      queueSaasConnections(`service = ? and connection_name = ? and ${fence.sql}`, [
+      queueSaasConnections(`service = ? and connection_name = ? and ${fence.sql} and ${reservation.sql}`, [
         service,
         connectionName,
         ...fence.values,
+        ...reservation.values,
       ]),
       {
         sql: `insert into connections (id, revision, service, connection_name, value, updated_at, provider_account_id)
-          select ?, ?, ?, ?, ?, ?, ? where ${fence.sql} on conflict (service, connection_name) do update set
+          select ?, ?, ?, ?, ?, ?, ? where ${fence.sql} and ${reservation.sql} on conflict (service, connection_name) do update set
           revision = excluded.revision, value = excluded.value, updated_at = excluded.updated_at,
           source = 'local', managed_project_id = null, provider_config_id = null, external_user_id = null,
           remote_account_id = null, local_request_id = null, provider_account_id = excluded.provider_account_id
@@ -115,10 +143,13 @@ export class SqlConnectionStore implements IConnectionStore {
             ? credential.profile.accountId
             : null,
           ...fence.values,
+          ...reservation.values,
         ],
       },
     ]);
     if (!accepted) return undefined;
+    if (!available)
+      throw new HttpRequestError("connection_reserved", "An identity authorization owns this alias.", 409);
     if (!row)
       throw new HttpRequestError(
         "connection_has_subscriptions",
@@ -158,41 +189,71 @@ export class SqlConnectionStore implements IConnectionStore {
     return row !== undefined;
   }
 
-  async delete(service: string, connectionName: string): Promise<void> {
+  async delete(service: string, connectionName: string, expected?: ExpiredOAuthState | string): Promise<void> {
+    const conditional = expected !== undefined;
+    const expired = typeof expected === "object" ? expected : undefined;
+    const expectedGeneration = typeof expected === "string" ? expected : expired?.retirementGeneration;
+    const generation = crypto.randomUUID();
+    const fence = conditional ? retirementMatches(service, connectionName, generation) : { sql: "1 = 1", values: [] };
+    const deletable =
+      "not exists (select 1 from trigger_subscriptions where connection_id = connections.id and mode <> 'resource-set' and status in ('active', 'deleting'))";
     const retired = "not exists (select 1 from connections where service = ? and connection_name = ?)";
     const results = await this.transaction([
       initializeRetirement(service, connectionName, crypto.randomUUID()),
+      conditional ? lockRetirement(service, connectionName, expectedGeneration!) : { sql: "select 1", values: [] },
+      conditional
+        ? {
+            // Claim only the exact still-expired state. The new ordinary retirement
+            // generation gates every following deletion in this same transaction.
+            sql: `update connection_retirements set generation = ? where service = ? and connection_name = ? and generation = ?
+          ${expired ? "and exists (select 1 from oauth_states where state = ? and value = ? and created_at < ?)" : ""}
+          and not exists (select 1 from connections where service = ? and connection_name = ? and not (${deletable}))`,
+            values: [
+              generation,
+              service,
+              connectionName,
+              expectedGeneration!,
+              ...(expired ? [expired.state, expired.value, expired.cutoff] : []),
+              service,
+              connectionName,
+            ],
+          }
+        : {
+            sql: "update connection_retirements set generation = generation where service = ? and connection_name = ?",
+            values: [service, connectionName],
+          },
       {
-        sql: "update connection_retirements set generation = generation where service = ? and connection_name = ?",
-        values: [service, connectionName],
+        sql: `update connections set revision = revision where service = ? and connection_name = ? and ${fence.sql}`,
+        values: [service, connectionName, ...fence.values],
       },
+      queueSaasConnections(`service = ? and connection_name = ? and ${fence.sql}`, [
+        service,
+        connectionName,
+        ...fence.values,
+      ]),
       {
-        sql: "update connections set revision = revision where service = ? and connection_name = ?",
-        values: [service, connectionName],
+        sql: `delete from connections where service = ? and connection_name = ? and ${fence.sql} and ${deletable}`,
+        values: [service, connectionName, ...fence.values],
       },
-      queueSaasConnections("service = ? and connection_name = ?", [service, connectionName]),
+      conditional
+        ? { sql: "select 1", values: [] }
+        : {
+            sql: `update connection_retirements set generation = ? where service = ? and connection_name = ? and ${retired}`,
+            values: [generation, service, connectionName, service, connectionName],
+          },
       {
-        sql: `delete from connections where service = ? and connection_name = ? and not exists
-        (select 1 from trigger_subscriptions where connection_id = connections.id and mode <> 'resource-set' and status in ('active', 'deleting'))`,
-        values: [service, connectionName],
-      },
-      {
-        sql: `update connection_retirements set generation = ? where service = ? and connection_name = ? and ${retired}`,
-        values: [crypto.randomUUID(), service, connectionName, service, connectionName],
-      },
-      {
-        sql: `delete from oauth_states where service = ? and connection_name = ? and ${retired}`,
-        values: [service, connectionName, service, connectionName],
+        sql: `delete from oauth_states where service = ? and connection_name = ? and ${fence.sql} and ${retired}`,
+        values: [service, connectionName, ...fence.values, service, connectionName],
       },
       {
         sql: `update connection_requests set phase = 'completed', status = 'failed', error_code = 'connection_retired',
           error_message = 'The connection was disconnected during authorization.', value = null, updated_at = ?
-          where kind = 'local' and service = ? and connection_name = ? and phase in ('pending', 'processing') and ${retired}`,
-        values: [Date.now(), service, connectionName, service, connectionName],
+          where kind = 'local' and service = ? and connection_name = ? and phase in ('pending', 'processing') and ${fence.sql} and ${retired}`,
+        values: [Date.now(), service, connectionName, ...fence.values, service, connectionName],
       },
       {
-        sql: "select id from connections where service = ? and connection_name = ?",
-        values: [service, connectionName],
+        sql: `select id from connections where service = ? and connection_name = ? and ${fence.sql}`,
+        values: [service, connectionName, ...fence.values],
       },
     ]);
     if (results.at(-1)![0])

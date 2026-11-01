@@ -23,3 +23,11 @@ export function initializeRetirement(service: string, connectionName: string, ge
     values: [service, connectionName, generation],
   };
 }
+
+/** A real pending identity authorization owns its alias; ordinary names are unrestricted. */
+export function temporaryAliasAvailable(service: string, connectionName: string, ownedState = ""): RequestStatement {
+  return {
+    sql: "not exists (select 1 from oauth_states where service = ? and connection_name = ? and (substr(state, 1, 5) = 'link_' or substr(state, 1, 13) = 'cleanup:link_') and state <> ?)",
+    values: [service, connectionName, ownedState],
+  };
+}

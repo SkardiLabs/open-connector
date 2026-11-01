@@ -24,6 +24,7 @@ import type { IOAuthCredentialRefresher, OAuthRevocationOutcome } from "./oauth/
 import type { IProviderLoader } from "./providers/provider-loader.ts";
 
 import { ConnectionError } from "./connection-error.ts";
+import { optionalRecord, optionalString } from "./core/cast.ts";
 import { normalizeCredentialValues } from "./core/credential-fields.ts";
 import { apiKeyCredentialFields } from "./core/provider-setup.ts";
 import { CredentialResolver, isOAuthCredentialExpired } from "./credential-resolver.ts";
@@ -52,6 +53,13 @@ export interface ConnectionSummary {
   profile: CredentialProfile;
   /** Completed OAuth consent state; absent for legacy and non-OAuth connections. */
   oauthAuthorizationId?: string;
+  /** Non-secret accepted binding for a temporary identity proof. */
+  linkOnly?: {
+    clientFromConnection: string;
+    connectionAlias: string;
+    connectionVersionId: string;
+    returnState: string;
+  };
   marketplace?: { id: string; pricing: MarketplacePricing };
   saas?: StoredSaasConnection["reference"];
 }
@@ -93,6 +101,8 @@ export interface DisconnectOptions {
    * grant at the provider, where revoking would end the one that stays.
    */
   revoke?: boolean;
+  /** Only retire the authorization generation whose callback is being cleaned up. */
+  retirementGeneration?: string;
 }
 
 export interface DisconnectedConnectionSummary {
@@ -245,6 +255,11 @@ export class ConnectionService {
       if (preferences.get(service) === true) authenticated.add(service);
     }
     return services.filter((service) => authenticated.has(service));
+  }
+
+  /** Exact stored-alias lookup; temporary consent must not enumerate other connections. */
+  async hasStoredConnection(service: string, connectionName: string): Promise<boolean> {
+    return (await this.store.get(service, normalizeConnectionName(connectionName))) !== undefined;
   }
 
   async getConnectionSummary(
@@ -567,7 +582,7 @@ export class ConnectionService {
         this.logger?.warn({ service, connectionName, error: describeError(error) }, "oauth token revocation skipped");
       }
     }
-    await this.store.delete(service, connectionName);
+    await this.store.delete(service, connectionName, options.retirementGeneration);
     const revoked =
       options.revoke !== true
         ? "skipped"
@@ -575,7 +590,7 @@ export class ConnectionService {
           ? "failed"
           : await this.revokeDeletedCredential(service, connectionName, stored);
     const provider = this.catalog.providers.find((provider) => provider.service === service);
-    if (provider && this.supportsAuth(provider, "no_auth")) {
+    if (options.retirementGeneration === undefined && provider && this.supportsAuth(provider, "no_auth")) {
       return { ...(await this.connectWithoutAuth(service, { connectionName })), revoked };
     }
 
@@ -660,6 +675,14 @@ export class ConnectionService {
     // Credential metadata also contains client secrets. Expose only this runtime-owned string.
     if (credential.authType === "oauth2" && typeof credential.metadata.oauthAuthorizationId === "string") {
       summary.oauthAuthorizationId = credential.metadata.oauthAuthorizationId;
+      const link = optionalRecord(credential.metadata.linkOnly);
+      if (link)
+        summary.linkOnly = {
+          clientFromConnection: optionalString(link.clientFromConnection) ?? "",
+          connectionAlias: optionalString(link.connectionAlias) ?? "",
+          connectionVersionId: optionalString(link.connectionVersionId) ?? "",
+          returnState: optionalString(link.returnState) ?? "",
+        };
     }
     return summary;
   }
@@ -882,6 +905,7 @@ export class ConnectionService {
         ...(validation.metadata ?? {}),
         // Provider validation cannot replace or invent completed consent provenance.
         oauthAuthorizationId: credential.metadata.oauthAuthorizationId,
+        linkOnly: credential.metadata.linkOnly,
         providerAccountVerified:
           Boolean(
             validation.profile?.accountId ??

@@ -1866,6 +1866,23 @@ describe("ConnectServer", () => {
     expect(duplicateHtml).not.toContain("postMessage");
     expect(duplicateHtml).not.toContain(state);
 
+    // A malformed callback must preserve a pending flow's trusted return
+    // destination just as the explicit provider-error callback does.
+    const failedReturn = "https://gateway.example/links/oauth_example/callback?state=receipt&error=provider_error";
+    const reject = vi.spyOn(OAuthFlowService.prototype, "rejectAuthorization").mockResolvedValueOnce(failedReturn);
+    const malformed = await app.request("/oauth/callback?state=link_malformed");
+    expect(malformed.status).toBe(302);
+    expect(malformed.headers.get("location")).toBe(failedReturn);
+    expect(reject).toHaveBeenCalledWith("link_malformed", false);
+    reject.mockRestore();
+    const providerFailure = vi
+      .spyOn(OAuthFlowService.prototype, "rejectAuthorization")
+      .mockResolvedValueOnce(failedReturn.replace("provider_error", "server_error"));
+    const failed = await app.request("/oauth/callback?state=link_failed&error=server_error");
+    expect(failed.headers.get("location")).toContain("error=server_error");
+    expect(providerFailure).toHaveBeenCalledWith("link_failed", false, "server_error");
+    providerFailure.mockRestore();
+
     // A refused authorization can never be completed afterwards.
     const late = await app.request(`/oauth/callback?state=${state}&code=example-code`);
     expect(late.status).toBe(400);
@@ -4650,13 +4667,23 @@ class MemoryOAuthStateStore implements IOAuthStateStore {
     }
   }
 
-  async set(state: OAuthAuthorizationState): Promise<void> {
+  async set(state: OAuthAuthorizationState): Promise<boolean> {
+    if (
+      state.linkOnly &&
+      !state.cleanupOnly &&
+      [...this.states.values()].some(
+        (stored) => stored.service === state.service && stored.connectionName === state.connectionName,
+      )
+    )
+      return false;
     this.states.set(state.state, state);
+    return true;
   }
 
   async take(state: string): Promise<OAuthAuthorizationState | undefined> {
     const value = this.states.get(state);
     this.states.delete(state);
+    if (value?.linkOnly && state.startsWith("link_")) this.states.set(`cleanup:${state}`, value);
     return value;
   }
 }
@@ -4842,3 +4869,16 @@ function createRunLog(id: string, startedAt: string): RunLog {
     ok: true,
   };
 }
+
+it("requires an administrator bearer for installed-app identity links even on the ordinary authorization route", async () => {
+  const app = createTestServer([oauthProvider]).createApp();
+  const response = await app.request("/api/oauth/authorizations", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ service: "oauth_example", connectionName: "link_once", linkOnly: {} }),
+  });
+  expect(response.status).toBe(403);
+  const missing = await app.request("/api/connections?service=oauth_example&connectionName=missing");
+  expect(missing.status).toBe(200);
+  await expect(missing.json()).resolves.toEqual([]);
+});
