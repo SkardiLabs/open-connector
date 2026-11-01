@@ -271,7 +271,7 @@ describe("Dropbox membership", () => {
           kind === "file" ? "list_file_members" : "list_folder_members",
           kind === "file"
             ? { file: "id:file-1", includeInherited: false, limit: 1 }
-            : { sharedFolderId: "1234", path: "/shared/nested", limit: 1 },
+            : { sharedFolderId: "1234", path: "/shared/nested ", limit: 1 },
         ),
       ).toEqual({ ok: true, output: { users, groups, invitees, cursor: "opaque-next-page" } });
       expect(
@@ -288,7 +288,7 @@ describe("Dropbox membership", () => {
           "Bearer dropbox-access-token",
           kind === "file"
             ? { file: "id:file-1", include_inherited: false, limit: 1 }
-            : { shared_folder_id: "1234", path: "/shared/nested", limit: 1 },
+            : { shared_folder_id: "1234", path: "/shared/nested ", limit: 1 },
         ],
         [`/2/sharing/list_${kind}_members/continue`, "Bearer dropbox-access-token", { cursor: "opaque-next-page" }],
       ]);

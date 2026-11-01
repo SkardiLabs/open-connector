@@ -13,6 +13,7 @@ import {
   objectArray,
   optionalBoolean,
   optionalNumber,
+  optionalRawString,
   optionalRecord as asOptionalObject,
   optionalString as asOptionalString,
   requiredRecord,
@@ -297,7 +298,7 @@ async function listFolderMembers(input: Record<string, unknown>, accessToken: st
     fetcher,
     body: compactObject({
       shared_folder_id: requireString(input.sharedFolderId, "dropbox shared folder ID"),
-      path: optionalString(input.path),
+      path: optionalRawString(input.path),
       limit: optionalNumber(input.limit),
     }),
   });
