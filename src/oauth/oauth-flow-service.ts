@@ -35,7 +35,7 @@ export type OAuthAuthorizationStart = {
   state: string;
 };
 
-export const OAUTH_STATE_MAX_AGE_MS = 15 * 60 * 1000;
+export const OAUTH_STATE_MAX_AGE_MS: number = 15 * 60 * 1000;
 
 /** Non-secret accepted-binding receipt supplied only by the trusted gateway. */
 export interface LinkOnlyAuthorization {
@@ -180,11 +180,7 @@ export class OAuthFlowService {
       throw new OAuthFlowError("oauth_custom_app_encryption_required", "Installed-app links require encrypted state.");
     }
     // A new link never replaces an installed binding or a previous consent.
-    if (
-      (await this.connections.listManagedConnections()).some(
-        (row) => row.service === input.service && row.connectionName === name,
-      )
-    ) {
+    if (await this.connections.hasStoredConnection(input.service, name)) {
       throw new OAuthFlowError("invalid_input", "The temporary link alias already exists.");
     }
     const credential = await this.connections.getCredential(input.service, link.clientFromConnection);
@@ -265,8 +261,12 @@ export class OAuthFlowService {
     if (state.startsWith("cleanup:")) return undefined;
     const pending = await this.requests.claim(state);
     if (!pending) {
-      const authorization = await this.states.take(state);
-      if (authorization?.linkOnly && !authorization.cleanupOnly) return this.linkReturn(authorization, undefined);
+      // Ordinary popup states are consumed by discardAuthorization below.
+      // Only the tagged identity flow has its own trusted return destination.
+      if (state.startsWith("link_")) {
+        const authorization = await this.states.take(state);
+        if (authorization?.linkOnly && !authorization.cleanupOnly) return this.linkReturn(authorization, undefined);
+      }
       return undefined;
     }
     await this.requests.fail(
@@ -312,7 +312,7 @@ export class OAuthFlowService {
     }
 
     const now = new Date();
-    const state = crypto.randomUUID();
+    const state = input.linkOnly ? `link_${crypto.randomUUID()}` : crypto.randomUUID();
     const pkceCodeVerifier = auth.pkce ? createPkceCodeVerifier() : undefined;
     const authorizationScopes = input.linkOnly
       ? config.requestedScopes!

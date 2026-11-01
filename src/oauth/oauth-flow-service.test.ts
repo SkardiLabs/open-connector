@@ -1564,6 +1564,7 @@ it("reuses the installed app for identity-only consent and leaves the source bin
     {
       authType: "oauth2",
       accessToken: "installed-token",
+      tokenType: "Bearer",
       profile: { accountId: "installer", displayName: "Installer", grantedScopes: ["content"] },
       metadata: {
         oauthClientId: "accepted-app",

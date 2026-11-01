@@ -255,6 +255,11 @@ export class ConnectionService {
     return services.filter((service) => authenticated.has(service));
   }
 
+  /** Exact stored-alias lookup; temporary consent must not enumerate other connections. */
+  async hasStoredConnection(service: string, connectionName: string): Promise<boolean> {
+    return (await this.store.get(service, normalizeConnectionName(connectionName))) !== undefined;
+  }
+
   async getConnectionSummary(
     service: string,
     connectionName?: string,
