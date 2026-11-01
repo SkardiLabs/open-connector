@@ -1,6 +1,7 @@
 import type { ProviderDefinition } from "../../core/types.ts";
 
 import { feishuOAuthScopesFor } from "../feishu/actions.ts";
+import { feishuProviderScopes } from "../feishu/scopes.ts";
 import { larkActions } from "./actions.ts";
 
 const service = "lark";
@@ -24,6 +25,7 @@ export const provider: ProviderDefinition = {
       type: "oauth2",
       authorizationUrl: "https://accounts.larksuite.com/open-apis/authen/v1/authorize",
       tokenUrl: "https://open.larksuite.com/open-apis/authen/v2/oauth/token",
+      identityScopes: [feishuProviderScopes.userIdRead],
       scopes: feishuOAuthScopesFor(larkActions),
       tokenEndpointAuthMethod: "client_secret_post",
       // Same v2 token endpoint as Feishu: it requires an application/json body.

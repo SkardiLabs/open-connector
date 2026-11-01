@@ -4842,3 +4842,13 @@ function createRunLog(id: string, startedAt: string): RunLog {
     ok: true,
   };
 }
+
+it("requires an administrator bearer for installed-app identity links even on the ordinary authorization route", async () => {
+  const app = createTestServer([oauthProvider]).createApp();
+  const response = await app.request("/api/oauth/authorizations", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ service: "oauth_example", connectionName: "link_once", linkOnly: {} }),
+  });
+  expect(response.status).toBe(403);
+});
