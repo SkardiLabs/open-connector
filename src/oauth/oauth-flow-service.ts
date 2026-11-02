@@ -165,7 +165,7 @@ export class OAuthFlowService {
       !this.linkReturnOrigins.includes(target.origin) ||
       target.username ||
       target.password ||
-      target.pathname !== `/links/${input.service}/callback` ||
+      (target.pathname !== "/links/callback" && target.pathname !== `/links/${input.service}/callback`) ||
       target.search ||
       target.hash ||
       !link.returnState ||
@@ -347,6 +347,11 @@ export class OAuthFlowService {
     const authorizationUrl = new URL(this.clientConfigs.resolveEndpointUrl(service, auth.authorizationUrl, config));
     for (const [key, value] of Object.entries(auth.authorizationParams ?? {})) {
       authorizationUrl.searchParams.set(key, value);
+    }
+    if (input.linkOnly) {
+      for (const [key, value] of Object.entries(auth.identityAuthorizationParams ?? {})) {
+        authorizationUrl.searchParams.set(key, value);
+      }
     }
     setAuthorizationParam(authorizationUrl, auth.authorizationRequestFields?.clientId, "client_id", config.clientId);
     setAuthorizationParam(authorizationUrl, auth.authorizationRequestFields?.redirectUri, "redirect_uri", redirectUri);

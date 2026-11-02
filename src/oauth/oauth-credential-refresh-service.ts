@@ -132,7 +132,10 @@ export class OAuthCredentialRefreshService implements IOAuthCredentialRefresher 
     if (!auth.revocationUrl) {
       return "unsupported";
     }
-    const token = credential.refreshToken || credential.accessToken;
+    const token =
+      auth.revocationRequestFormat === "bearer"
+        ? credential.accessToken
+        : credential.refreshToken || credential.accessToken;
     if (!token) {
       return "unsupported";
     }
@@ -152,6 +155,7 @@ export class OAuthCredentialRefreshService implements IOAuthCredentialRefresher 
     }
     await requestTokenRevocation({
       revocationUrl,
+      requestFormat: auth.revocationRequestFormat,
       token,
       tokenTypeHint: credential.refreshToken ? "refresh_token" : "access_token",
       clientId: config?.clientId,

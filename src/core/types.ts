@@ -135,16 +135,19 @@ export type OAuth2AuthDefinition = {
   /** Provider token endpoint used to refresh an access token. Defaults to tokenUrl. */
   refreshTokenUrl?: string;
   /**
-   * Provider token revocation endpoint (RFC 7009). When set, a disconnect that
-   * asks for it (`revoke: true`) posts the connection's refresh token (else its
-   * access token) there once the credential is deleted, so the grant ends at
-   * the provider as well as here. Inert otherwise.
+   * Provider token revocation endpoint. A disconnect with `revoke: true` calls
+   * it after deleting the credential. Form mode uses RFC 7009 with the refresh
+   * token (else the access token); bearer mode uses the access token alone.
    */
   revocationUrl?: string;
+  /** Revocation transport. Bearer mode posts the access token in Authorization with no body. */
+  revocationRequestFormat?: "form" | "bearer";
   /** Default OAuth scopes when no requestedScopes or authorization options are selected. */
   scopes: string[];
   /** Scopes permitted for a temporary identity proof; never content defaults. */
   identityScopes?: string[];
+  /** Authorization parameters overriding content-consent defaults for a temporary identity proof only. */
+  identityAuthorizationParams?: Record<string, string>;
   /**
    * Additional scopes available for explicit selection through requestedScopes or authorization
    * options. requestedScopes replaces the default list; default scopes are not added automatically.

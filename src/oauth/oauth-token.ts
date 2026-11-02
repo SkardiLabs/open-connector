@@ -113,6 +113,7 @@ export type OAuthTokenErrorFactory = (message: string, failure?: OAuthTokenFailu
 
 interface TokenRevocationRequest {
   revocationUrl: string;
+  requestFormat?: OAuth2AuthDefinition["revocationRequestFormat"];
   token: string;
   tokenTypeHint: "access_token" | "refresh_token";
   clientId?: string;
@@ -128,7 +129,8 @@ interface TokenRevocationRequest {
  * POST of `token` and `token_type_hint`, authenticated the way the provider's
  * token endpoint is: `client_secret_basic` sends the client id and secret in
  * the Authorization header alone, `client_secret_post` sends both in the form,
- * and a public client sends its client id alone. A 2xx is success; anything
+ * and a public client sends its client id alone. Bearer mode instead sends
+ * only the access token in Authorization, with an empty body. A 2xx is success; anything
  * else — a non-2xx, no response, the deadline — is thrown through
  * `createError`, with only the HTTP status and the provider's `error` code in
  * the message, never the body.
@@ -147,7 +149,10 @@ export async function requestTokenRevocation(input: TokenRevocationRequest): Pro
     "content-type": "application/x-www-form-urlencoded",
     "user-agent": providerUserAgent,
   };
-  if (input.clientId) {
+  if (input.requestFormat === "bearer") {
+    headers.authorization = `Bearer ${input.token}`;
+    delete headers["content-type"];
+  } else if (input.clientId) {
     if (input.tokenEndpointAuthMethod === "client_secret_basic") {
       // The header carries the client's identity; the body does not repeat it.
       headers.authorization = basicAuthorizationHeader(
@@ -173,7 +178,7 @@ export async function requestTokenRevocation(input: TokenRevocationRequest): Pro
     response = await providerFetch(input.revocationUrl, {
       method: "POST",
       headers,
-      body: new URLSearchParams(fields),
+      body: input.requestFormat === "bearer" ? undefined : new URLSearchParams(fields),
       signal: timeout.signal,
       redirect: "manual",
     });
