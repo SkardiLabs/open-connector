@@ -63,7 +63,7 @@ describe("OAuthCredentialRefreshService", () => {
               accessToken: "provider-refreshed-token",
               tokenType: "Bearer",
               expiresAt: "2026-12-29T00:00:00.000Z",
-              metadata: { oauthAuthorizationId: "runtime-supplied", refreshedBy: "provider-runtime" },
+              metadata: { oauthAuthorizationId: "runtime-supplied", linkOnly: null, refreshedBy: "provider-runtime" },
             };
           },
         },
@@ -72,10 +72,15 @@ describe("OAuthCredentialRefreshService", () => {
 
     const refreshed = await new OAuthCredentialRefreshService(clientConfigs, providerLoader).refresh(
       "example",
-      expiredCredential({ oauthAuthorizationId: "completed-authorization", expires_in: 3600 }),
+      expiredCredential({
+        oauthAuthorizationId: "completed-authorization",
+        linkOnly: { requestedScopes: ["identity"] },
+        expires_in: 3600,
+      }),
     );
 
     expect(refreshed.metadata.oauthAuthorizationId).toBe("completed-authorization");
+    expect(refreshed.metadata.linkOnly).toEqual({ requestedScopes: ["identity"] });
     expect(refreshed.metadata.refreshedBy).toBe("provider-runtime");
   });
 
@@ -92,7 +97,7 @@ describe("OAuthCredentialRefreshService", () => {
               accessToken: "provider-refreshed-token",
               tokenType: "Bearer",
               expiresAt: "2026-12-29T00:00:00.000Z",
-              metadata: { oauthAuthorizationId: "runtime-supplied" },
+              metadata: { oauthAuthorizationId: "runtime-supplied", linkOnly: { requestedScopes: ["identity"] } },
             };
           },
         },
@@ -105,6 +110,7 @@ describe("OAuthCredentialRefreshService", () => {
     );
 
     expect(refreshed.metadata.oauthAuthorizationId).toBeUndefined();
+    expect(refreshed.metadata.linkOnly).toBeUndefined();
   });
 
   it("keeps an expiry when the refresh response omits expires_in", async () => {

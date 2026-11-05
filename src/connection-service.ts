@@ -432,16 +432,25 @@ export class ConnectionService {
   ): Promise<ConnectionSummary> {
     const connectionName = normalizeConnectionName(connectionNameInput);
     const generation = retirementGeneration ?? (await this.store.getRetirementGeneration(service, connectionName));
-    const storedCredential = await this.prepareOAuthCredential(service, credential, signal);
-    const stored = await this.store.setIfCurrentGeneration(service, connectionName, storedCredential, generation);
-    if (!stored)
-      throw new ConnectionError("connection_retired", "The connection was disconnected during authorization.");
-    return this.createStoredConnectionSummary(
-      this.getAvailableProvider(service),
-      stored.id,
-      connectionName,
-      storedCredential,
-    );
+    try {
+      const storedCredential = await this.prepareOAuthCredential(service, credential, signal);
+      const stored = await this.store.setIfCurrentGeneration(service, connectionName, storedCredential, generation);
+      if (!stored)
+        throw new ConnectionError("connection_retired", "The connection was disconnected during authorization.");
+      return this.createStoredConnectionSummary(
+        this.getAvailableProvider(service),
+        stored.id,
+        connectionName,
+        storedCredential,
+      );
+    } catch (error) {
+      // A rejected temporary proof has not reached the alias store yet. Dispose
+      // this freshly minted credential rather than looking up the installed app.
+      if (credential.metadata.linkOnly !== undefined) {
+        await this.revokeCredential(service, connectionName, credential);
+      }
+      throw error;
+    }
   }
 
   /** Capture the durable disconnect fence before sending the user to the provider. */
@@ -588,7 +597,11 @@ export class ConnectionService {
         ? "skipped"
         : readFailed
           ? "failed"
-          : await this.revokeDeletedCredential(service, connectionName, stored);
+          : await this.revokeCredential(
+              service,
+              connectionName,
+              stored?.source === "saas" ? undefined : stored?.credential,
+            );
     const provider = this.catalog.providers.find((provider) => provider.service === service);
     if (options.retirementGeneration === undefined && provider && this.supportsAuth(provider, "no_auth")) {
       return { ...(await this.connectWithoutAuth(service, { connectionName })), revoked };
@@ -598,26 +611,25 @@ export class ConnectionService {
   }
 
   /**
-   * End the grant at the provider once its credential is deleted here, so a
-   * disconnected provider does not keep an app it no longer sees authorized.
+   * End a deleted or rejected credential's grant at the provider.
    * Best effort by design: a provider that refuses or cannot be reached is
    * logged, and the connection the caller asked to remove is gone either way.
    */
-  private async revokeDeletedCredential(
+  private async revokeCredential(
     service: string,
     connectionName: string,
-    stored: StoredConnection | undefined,
+    credential: ResolvedCredential | undefined,
   ): Promise<OAuthRevocationOutcome> {
     const refresher = this.oauthCredentials;
     if (!refresher?.revoke) {
       return "unsupported";
     }
     const logContext = { service, connectionName };
-    if (!stored || stored.source === "saas" || stored.credential.authType !== "oauth2") {
+    if (credential?.authType !== "oauth2") {
       return "unsupported";
     }
     try {
-      const outcome = await refresher.revoke(service, stored.credential);
+      const outcome = await refresher.revoke(service, credential);
       this.logger?.info({ ...logContext, revoked: outcome }, "oauth token revocation completed");
       return outcome;
     } catch (error) {

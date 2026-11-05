@@ -79,7 +79,13 @@ export class OAuthCredentialRefreshService implements IOAuthCredentialRefresher 
         tokenRequestFields: auth.tokenRequestFields,
         tokenEndpointAuthMethod: auth.tokenEndpointAuthMethod,
         tokenRequestFormat: auth.tokenRequestFormat,
-        tokenUrl: this.clientConfigs.resolveEndpointUrl(service, auth.refreshTokenUrl ?? auth.tokenUrl, config),
+        tokenUrl: this.clientConfigs.resolveEndpointUrl(
+          service,
+          (credential.metadata.linkOnly !== undefined && auth.identityTokenUrl) ||
+            auth.refreshTokenUrl ||
+            auth.tokenUrl,
+          config,
+        ),
         createError,
       });
     }
@@ -111,6 +117,7 @@ export class OAuthCredentialRefreshService implements IOAuthCredentialRefresher 
         ...refreshed.metadata,
         // Refresh rotates tokens within the existing authorization, including legacy absence.
         oauthAuthorizationId: credential.metadata.oauthAuthorizationId,
+        linkOnly: credential.metadata.linkOnly,
         expires_in: expiresIn,
         refreshedAt: new Date().toISOString(),
       },
@@ -129,13 +136,14 @@ export class OAuthCredentialRefreshService implements IOAuthCredentialRefresher 
     } catch {
       return "unsupported";
     }
-    if (!auth.revocationUrl) {
+    const identity = credential.metadata.linkOnly === undefined ? undefined : auth.identityRevocation;
+    const declaredUrl = identity?.url ?? auth.revocationUrl;
+    const requestFormat = identity?.requestFormat ?? auth.revocationRequestFormat;
+    if (!declaredUrl) {
       return "unsupported";
     }
     const token =
-      auth.revocationRequestFormat === "bearer"
-        ? credential.accessToken
-        : credential.refreshToken || credential.accessToken;
+      requestFormat === "bearer" ? credential.accessToken : credential.refreshToken || credential.accessToken;
     if (!token) {
       return "unsupported";
     }
@@ -145,17 +153,18 @@ export class OAuthCredentialRefreshService implements IOAuthCredentialRefresher 
       readOAuthClientConfigMetadata(service, credential.metadata) ?? (await this.clientConfigs.getConfig(service));
     let revocationUrl: string;
     if (config) {
-      revocationUrl = this.clientConfigs.resolveEndpointUrl(service, auth.revocationUrl, config);
-    } else if (auth.revocationUrl.includes("{")) {
+      revocationUrl = this.clientConfigs.resolveEndpointUrl(service, declaredUrl, config);
+    } else if (declaredUrl.includes("{")) {
       // A templated endpoint ({tenant}) needs the client configuration that
       // filled it in at sign-in; without one there is nowhere to post to.
       throw createError(`Configure an OAuth client for ${service} before revoking its token.`);
     } else {
-      revocationUrl = auth.revocationUrl;
+      revocationUrl = declaredUrl;
     }
     await requestTokenRevocation({
       revocationUrl,
-      requestFormat: auth.revocationRequestFormat,
+      requestFormat,
+      successField: identity?.successField,
       token,
       tokenTypeHint: credential.refreshToken ? "refresh_token" : "access_token",
       clientId: config?.clientId,
