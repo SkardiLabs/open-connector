@@ -27,7 +27,7 @@ import {
   runProviderRequest,
   withRetryAfterSeconds,
 } from "../provider-runtime.ts";
-import { slackConversationTypes } from "./constants.ts";
+import { slackConversationTypes, slackIdentityScopes } from "./constants.ts";
 
 export const slackApiBaseUrl = "https://slack.com/api";
 const slackFileUrlMaxBytes = 100 * 1024 * 1024;
@@ -198,6 +198,21 @@ export const slackCredentialValidators: CredentialValidators = {
     };
   },
   async oauth2(input, { fetcher, signal }) {
+    if (input.metadata.linkOnly !== undefined) {
+      if (
+        !isSlackIdentityGrant(input.metadata) ||
+        readSlackTokenKind(input.accessToken, input.metadata) === "bot" ||
+        input.metadata.ok !== true
+      ) {
+        throw providerResponseError("Slack identity authorization response is invalid.");
+      }
+      const identity = await slackOpenIdIdentity({ accessToken: input.accessToken, fetcher, signal });
+      return {
+        profile: { accountId: identity.userId, displayName: identity.userId },
+        grantedScopes: optionalStringArray(optionalRecord(input.metadata.linkOnly)?.requestedScopes),
+        metadata: { currentAccount: identity },
+      };
+    }
     const payload = await slackAuthTest({ accessToken: input.accessToken, fetcher, signal });
 
     const responseScopes = readSlackCredentialScopes(input.accessToken, input.metadata);
@@ -253,8 +268,37 @@ function slackCredentialProfile(payload: SlackAuthTestPayload): { accountId: str
 }
 
 async function slackGetCurrentUser(context: SlackActionContext): Promise<unknown> {
+  if (context.metadata.linkOnly !== undefined) {
+    if (!isSlackIdentityGrant(context.metadata)) {
+      throw providerResponseError("Slack identity authorization purpose is invalid.");
+    }
+    return slackOpenIdIdentity(context);
+  }
   const identity = readSlackAuthTestIdentity(await slackAuthTest(context));
   return { teamId: identity.teamId, userId: identity.userId, isBot: identity.botId !== undefined };
+}
+
+/** The trusted runtime receipt selects OpenID; a content token's scope never does. */
+function isSlackIdentityGrant(metadata: Record<string, unknown>): boolean {
+  const scopes = optionalStringArray(optionalRecord(metadata.linkOnly)?.requestedScopes);
+  return !!scopes?.includes("openid") && scopes.every((scope) => slackIdentityScopes.includes(scope));
+}
+
+async function slackOpenIdIdentity(
+  context: Omit<SlackRequestJsonInput, "method" | "body">,
+): Promise<{ teamId: string; userId: string; isBot: false }> {
+  const payload = await slackFormRequestJson<SlackPayloadError & Record<string, unknown>>(
+    context,
+    "openid.connect.userInfo",
+    {},
+  );
+  if (payload.ok !== true) throw providerResponseError("Slack OpenID user information is invalid.");
+  const teamId = requireSlackId(payload["https://slack.com/team_id"], "OpenID team_id");
+  const userId = requireSlackId(payload["https://slack.com/user_id"], "OpenID user_id");
+  if (!/^T[A-Z0-9]+$/u.test(teamId) || !/^[UW][A-Z0-9]+$/u.test(userId) || payload.sub !== userId) {
+    throw providerResponseError("Slack OpenID identity claims do not match.");
+  }
+  return { teamId, userId, isBot: false };
 }
 
 /** Read the workspace and installer from stored OAuth metadata. */
@@ -582,16 +626,15 @@ async function slackListUsers(input: Record<string, unknown>, context: SlackActi
     url.searchParams.set("include_locale", String(input.includeLocale));
   }
 
-  const payload = await slackGetJson<{
-    ok: boolean;
-    members?: Array<Record<string, unknown>>;
-    response_metadata?: { next_cursor?: string };
-    error?: string;
-  }>(url, context);
+  const payload = await slackGetJson<SlackPayloadError & { members?: unknown }>(url, context);
 
   return {
-    users: (payload.members ?? []).map((member) => normalizeUser(member)),
-    nextCursor: normalizeNextCursor(payload.response_metadata?.next_cursor),
+    users: requireSlackArray(payload.members, "users.list members").map((member) => {
+      const row = requiredResponseRecord(member, "users.list member");
+      requireSlackId(row.id, "users.list member id");
+      return normalizeUser(row);
+    }),
+    nextCursor: normalizeNextCursor(readSlackNextCursor(payload, "users.list")),
   };
 }
 
@@ -962,7 +1005,7 @@ async function slackRequestJson<T extends SlackPayloadError>(input: SlackRequest
 }
 
 async function slackFormRequestJson<T extends SlackPayloadError>(
-  context: SlackActionContext,
+  context: Omit<SlackRequestJsonInput, "method" | "body">,
   method: string,
   body: Record<string, unknown>,
 ): Promise<T> {
@@ -1111,6 +1154,7 @@ function readSlackTokenKind(accessToken: string, metadata: Record<string, unknow
   if (accessToken.startsWith("xoxp-") || accessToken.startsWith("xoxe.xoxp-")) {
     return "user";
   }
+  if (isSlackIdentityGrant(metadata)) return "user";
   return undefined;
 }
 

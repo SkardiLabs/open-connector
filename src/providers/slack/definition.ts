@@ -1,6 +1,7 @@
 import type { OAuthAuthorizationOption, ProviderDefinition } from "../../core/types.ts";
 
 import { slackActions } from "./actions.ts";
+import { slackIdentityScopes } from "./constants.ts";
 import { snapshot as triggerSnapshot0_0 } from "./trigger-on-message-posted.definition.ts";
 import { triggerPermissions } from "./trigger-permissions.ts";
 
@@ -176,6 +177,16 @@ export const provider: ProviderDefinition = {
       scopeSeparator: ",",
       tokenEndpointAuthMethod: "client_secret_post",
       authorizationOptions: slackAuthorizationOptions,
+      identityScopes: slackIdentityScopes,
+      identityAuthorizationUrl: "https://slack.com/openid/connect/authorize",
+      identityTokenUrl: "https://slack.com/api/openid.connect.token",
+      identityScopeSeparator: " ",
+      identityAuthorizationParams: { response_mode: "form_post" },
+      identityRevocation: {
+        url: "https://slack.com/api/auth.revoke",
+        requestFormat: "bearer",
+        successFields: ["ok", "revoked"],
+      },
     },
     {
       type: "api_key",

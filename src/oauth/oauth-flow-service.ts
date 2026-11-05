@@ -196,7 +196,12 @@ export class OAuthFlowService {
     if (!config || credential.metadata.oauthClientId !== config.clientId) {
       throw new OAuthFlowError("oauth_source_mismatch", "The installed OAuth app cannot be proved.");
     }
-    return this.clientConfigs.normalizeConfig(input.service, { ...config, requestedScopes: link.requestedScopes });
+    // Identity scopes were checked against their separate allowlist above;
+    // normal client configuration must retain its content-only scope rules.
+    return {
+      ...this.clientConfigs.normalizeConfig(input.service, { ...config, requestedScopes: undefined }),
+      requestedScopes: [...new Set(link.requestedScopes)],
+    };
   }
 
   async startConnectionRequest(input: OAuthConnectionRequestInput): Promise<OAuthConnectionRequestStart> {
@@ -344,7 +349,13 @@ export class OAuthFlowService {
       linkOnly: input.linkOnly,
     };
 
-    const authorizationUrl = new URL(this.clientConfigs.resolveEndpointUrl(service, auth.authorizationUrl, config));
+    const authorizationUrl = new URL(
+      this.clientConfigs.resolveEndpointUrl(
+        service,
+        (input.linkOnly && auth.identityAuthorizationUrl) || auth.authorizationUrl,
+        config,
+      ),
+    );
     for (const [key, value] of Object.entries(auth.authorizationParams ?? {})) {
       authorizationUrl.searchParams.set(key, value);
     }
@@ -360,7 +371,7 @@ export class OAuthFlowService {
     if (authorizationScopes.length > 0 && auth.authorizationRequestFields?.scope !== false) {
       authorizationUrl.searchParams.set(
         auth.authorizationRequestFields?.scope ?? "scope",
-        authorizationScopes.join(auth.scopeSeparator ?? " "),
+        authorizationScopes.join((input.linkOnly && auth.identityScopeSeparator) || auth.scopeSeparator || " "),
       );
     }
     if (pkceCodeVerifier) {
@@ -405,7 +416,11 @@ export class OAuthFlowService {
       }
 
       const redirectUri = pending.redirectUri ?? this.clientConfigs.expectedRedirectUri(pending.service, config);
-      const tokenUrl = this.clientConfigs.resolveEndpointUrl(pending.service, auth.tokenUrl, config);
+      const tokenUrl = this.clientConfigs.resolveEndpointUrl(
+        pending.service,
+        (pending.linkOnly && auth.identityTokenUrl) || auth.tokenUrl,
+        config,
+      );
       const createError = (message: string): OAuthFlowError =>
         new OAuthFlowError("oauth_token_exchange_failed", message);
       const providerOAuth = await this.providerLoader.loadProviderOAuthRuntime?.(pending.service);

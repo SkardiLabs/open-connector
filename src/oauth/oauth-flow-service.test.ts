@@ -1560,8 +1560,10 @@ it("reuses the installed app for identity-only consent and leaves the source bin
         type: "oauth2",
         authorizationUrl: "https://example.com/authorize",
         tokenUrl: "https://example.com/token",
-        scopes: ["identity", "content"],
+        scopes: ["content"],
         identityScopes: ["identity"],
+        identityAuthorizationUrl: "https://example.com/identity/authorize",
+        identityTokenUrl: "https://example.com/identity/token",
         tokenEndpointAuthMethod: "client_secret_post",
       },
     ],
@@ -1625,16 +1627,26 @@ it("reuses the installed app for identity-only consent and leaves the source bin
     connectionName: "link_requested",
     owner: "tester",
   });
+  expect(new URL(ordinaryRequest.authorizationUrl).pathname).toBe("/authorize");
+  expect(new URL(ordinaryRequest.authorizationUrl).searchParams.get("scope")).toBe("content");
   await expect(
     services.flow.startAuthorization({ service: "example", connectionName: "link_requested", linkOnly }),
   ).rejects.toMatchObject({ code: "invalid_input" });
   await services.flow.rejectAuthorization(ordinaryRequest.stateHandle, false);
   const url = new URL(started.authorizationUrl);
+  expect(url.pathname).toBe("/identity/authorize");
   expect(url.searchParams.get("client_id")).toBe("accepted-app");
   expect(url.searchParams.get("scope")).toBe("identity");
   vi.stubGlobal(
     "fetch",
-    vi.fn(async () => Response.json({ access_token: "temporary-token", token_type: "Bearer" })),
+    vi.fn(async (input, init) => {
+      expect(String(input)).toBe(
+        (init!.body as URLSearchParams).get("code") === "normal-code"
+          ? "https://example.com/token"
+          : "https://example.com/identity/token",
+      );
+      return Response.json({ access_token: "temporary-token", token_type: "Bearer" });
+    }),
   );
   // Pause after take() and before the cleanup write. The same SQL state row
   // must still reserve this alias while the real token exchange is in flight.

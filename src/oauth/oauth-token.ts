@@ -114,6 +114,8 @@ export type OAuthTokenErrorFactory = (message: string, failure?: OAuthTokenFailu
 interface TokenRevocationRequest {
   revocationUrl: string;
   requestFormat?: OAuth2AuthDefinition["revocationRequestFormat"];
+  /** Declared top-level Boolean confirmations required in addition to HTTP success. */
+  successFields?: string[];
   token: string;
   tokenTypeHint: "access_token" | "refresh_token";
   clientId?: string;
@@ -130,7 +132,8 @@ interface TokenRevocationRequest {
  * token endpoint is: `client_secret_basic` sends the client id and secret in
  * the Authorization header alone, `client_secret_post` sends both in the form,
  * and a public client sends its client id alone. Bearer mode instead sends
- * only the access token in Authorization, with an empty body. A 2xx is success; anything
+ * only the access token in Authorization, with an empty body. A 2xx is success
+ * unless the declaration also requires Boolean confirmation fields. Anything
  * else — a non-2xx, no response, the deadline — is thrown through
  * `createError`, with only the HTTP status and the provider's `error` code in
  * the message, never the body.
@@ -193,7 +196,7 @@ export async function requestTokenRevocation(input: TokenRevocationRequest): Pro
     throw input.createError(`OAuth token revocation failed without an HTTP response: ${describeCause(error)}`);
   }
   try {
-    if (response.ok) {
+    if (response.ok && !input.successFields?.length) {
       void response.body?.cancel().catch(() => undefined);
       return;
     }
@@ -205,7 +208,10 @@ export async function requestTokenRevocation(input: TokenRevocationRequest): Pro
         signal: timeout.signal,
         createError: (message) => new OAuthTokenResponseSizeError(message),
       });
-      code = optionalString(decodeTokenPayload(bytes).error);
+      const payload = decodeTokenPayload(bytes);
+      if (response.ok && input.successFields?.every((field) => payload[field] === true) && payload.error === undefined)
+        return;
+      code = optionalString(payload.error);
     } catch {
       code = undefined;
     }

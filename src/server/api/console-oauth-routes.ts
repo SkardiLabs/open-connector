@@ -6,6 +6,7 @@ import type { SaasProjectService } from "../../saas/saas-project-service.ts";
 import type { Context } from "hono";
 
 import { Hono } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import { ConnectionError } from "../../connection-error.ts";
 import {
   optionalBoolean,
@@ -409,16 +410,39 @@ export function createConsoleOAuthRoutes({
     }
   });
 
-  app.get("/oauth/callback", async (context) => {
-    const state = context.req.query("state");
-    const code = context.req.query("code");
+  async function callback(context: Context): Promise<Response> {
+    const callbackUrl = new URL(context.req.url);
+    let parameters = callbackUrl.searchParams;
+    if (context.req.method === "POST") {
+      if (
+        context.req.header("content-type")?.split(";", 1)[0]?.trim().toLowerCase() !==
+          "application/x-www-form-urlencoded" ||
+        callbackUrl.search
+      ) {
+        return jsonError(
+          context,
+          400,
+          "invalid_oauth_callback",
+          "OAuth callback requires a form body without query parameters.",
+        );
+      }
+      parameters = new URLSearchParams(await context.req.text());
+    }
+    if (
+      [...parameters.keys()].some((key) => parameters.getAll(key).length !== 1) ||
+      (parameters.has("code") && parameters.has("error"))
+    ) {
+      return jsonError(context, 400, "invalid_oauth_callback", "OAuth callback parameters must be unambiguous.");
+    }
+    const state = parameters.get("state") ?? undefined;
+    const code = parameters.get("code") ?? undefined;
     const logContext = {
       path: context.req.path,
       hasState: Boolean(state),
       hasCode: Boolean(code),
     };
     logger?.info(logContext, "oauth callback received");
-    const providerError = context.req.query("error");
+    const providerError = parameters.get("error");
     if (providerError) {
       const returnUri = state
         ? await oauthFlow.rejectAuthorization(
@@ -442,7 +466,7 @@ export function createConsoleOAuthRoutes({
           ...logContext,
           errorCode: "oauth_provider_error",
           providerError: errorCode,
-          providerErrorDescription: context.req.query("error_description"),
+          providerErrorDescription: parameters.get("error_description") ?? undefined,
         },
         "oauth callback refused by provider",
       );
@@ -470,11 +494,10 @@ export function createConsoleOAuthRoutes({
 
     let service: string;
     try {
-      const callbackUrl = new URL(context.req.url);
       const completed = await oauthFlow.completeAuthorization({
         state,
         code,
-        callbackParameters: Object.fromEntries(callbackUrl.searchParams),
+        callbackParameters: Object.fromEntries(parameters),
         callbackQuery: callbackUrl.search,
         signal: context.req.raw.signal,
       });
@@ -504,7 +527,16 @@ export function createConsoleOAuthRoutes({
     }
 
     return context.html(renderOAuthCompletionPage(service, oauthCloseDelaySeconds));
-  });
+  }
+  app.get("/oauth/callback", callback);
+  app.post(
+    "/oauth/callback",
+    bodyLimit({
+      maxSize: 16 * 1024,
+      onError: (context) => jsonError(context, 413, "payload_too_large", "OAuth callback body is too large."),
+    }),
+    callback,
+  );
 
   return app;
 }

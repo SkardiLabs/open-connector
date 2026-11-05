@@ -148,6 +148,19 @@ export type OAuth2AuthDefinition = {
   identityScopes?: string[];
   /** Authorization parameters overriding content-consent defaults for a temporary identity proof only. */
   identityAuthorizationParams?: Record<string, string>;
+  /** Alternate consent endpoint used only by the existing temporary identity flow. */
+  identityAuthorizationUrl?: string;
+  /** Alternate code/refresh endpoint used only by temporary identity credentials. */
+  identityTokenUrl?: string;
+  /** Identity scopes may use a different separator from the content grant. */
+  identityScopeSeparator?: " " | ",";
+  /** Disposal of a temporary identity credential without changing content-grant revocation. */
+  identityRevocation?: {
+    url: string;
+    requestFormat?: "form" | "bearer";
+    /** Top-level response fields that must each contain the Boolean true. */
+    successFields?: string[];
+  };
   /**
    * Additional scopes available for explicit selection through requestedScopes or authorization
    * options. requestedScopes replaces the default list; default scopes are not added automatically.
