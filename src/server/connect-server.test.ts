@@ -1820,7 +1820,7 @@ describe("ConnectServer", () => {
     expect(html).not.toContain("postMessage");
   });
 
-  it("posts a cancelled authorization to the configured opener origin only, and never completes it later", async () => {
+  it.each(["GET", "POST"])("handles a cancelled %s callback only for its pending authorization", async (method) => {
     const app = createTestServer([oauthProvider], {
       oauthResultOrigins: ["https://console.example.com"],
       oauthCloseDelaySeconds: 2,
@@ -1841,8 +1841,16 @@ describe("ConnectServer", () => {
       body: JSON.stringify({ service: "oauth_example" }),
     });
     const { state } = (await authorization.json()) as { state: string };
+    const callbackRequest = (query: string) =>
+      method === "GET"
+        ? app.request(`/oauth/callback?${query}`)
+        : app.request("/oauth/callback", {
+            method,
+            headers: { "content-type": "application/x-www-form-urlencoded" },
+            body: query,
+          });
 
-    const callback = await app.request(`/oauth/callback?error=access_denied&state=${state}`);
+    const callback = await callbackRequest(`error=access_denied&state=${state}`);
     const html = await callback.text();
 
     expect(callback.status, html).toBe(200);
@@ -1859,7 +1867,7 @@ describe("ConnectServer", () => {
     // A duplicate refusal for a state no longer pending (here: already
     // refused; equally, already completed by another callback) still gets the
     // page, but claims nothing about that authorization to the opener.
-    const duplicate = await app.request(`/oauth/callback?error=access_denied&state=${state}`);
+    const duplicate = await callbackRequest(`error=access_denied&state=${state}`);
     const duplicateHtml = await duplicate.text();
     expect(duplicate.status, duplicateHtml).toBe(200);
     expect(duplicateHtml).toContain("Authorization cancelled");
@@ -1870,7 +1878,7 @@ describe("ConnectServer", () => {
     // destination just as the explicit provider-error callback does.
     const failedReturn = "https://gateway.example/links/oauth_example/callback?state=receipt&error=provider_error";
     const reject = vi.spyOn(OAuthFlowService.prototype, "rejectAuthorization").mockResolvedValueOnce(failedReturn);
-    const malformed = await app.request("/oauth/callback?state=link_malformed");
+    const malformed = await callbackRequest("state=link_malformed");
     expect(malformed.status).toBe(302);
     expect(malformed.headers.get("location")).toBe(failedReturn);
     expect(reject).toHaveBeenCalledWith("link_malformed", false);
@@ -1878,13 +1886,13 @@ describe("ConnectServer", () => {
     const providerFailure = vi
       .spyOn(OAuthFlowService.prototype, "rejectAuthorization")
       .mockResolvedValueOnce(failedReturn.replace("provider_error", "server_error"));
-    const failed = await app.request("/oauth/callback?state=link_failed&error=server_error");
+    const failed = await callbackRequest("state=link_failed&error=server_error");
     expect(failed.headers.get("location")).toContain("error=server_error");
     expect(providerFailure).toHaveBeenCalledWith("link_failed", false, "server_error");
     providerFailure.mockRestore();
 
     // A refused authorization can never be completed afterwards.
-    const late = await app.request(`/oauth/callback?state=${state}&code=example-code`);
+    const late = await callbackRequest(`state=${state}&code=example-code`);
     expect(late.status).toBe(400);
     await expect(late.json()).resolves.toMatchObject({ error: { code: "invalid_oauth_state" } });
   });
@@ -1903,9 +1911,69 @@ describe("ConnectServer", () => {
     });
   });
 
-  it.each([undefined, 0, 3])(
-    "lists OAuth connections after the callback completes with close delay %s",
-    async (oauthCloseDelaySeconds) => {
+  it("rejects ambiguous and oversized callback bodies before consuming authorization state", async () => {
+    const app = createTestServer([oauthProvider], { auth: { adminToken: "local-token" } }).createApp();
+    const complete = vi.spyOn(OAuthFlowService.prototype, "completeAuthorization");
+    const reject = vi.spyOn(OAuthFlowService.prototype, "rejectAuthorization");
+    for (const [path, options] of [
+      ["/oauth/callback?state=one&state=two&code=code", undefined],
+      ["/oauth/callback?state=one&code=code&error=access_denied", undefined],
+      [
+        "/oauth/callback?state=one",
+        {
+          method: "POST",
+          headers: { "content-type": "application/x-www-form-urlencoded" },
+          body: "state=one&code=code",
+        },
+      ],
+      ["/oauth/callback", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }],
+      [
+        "/oauth/callback",
+        {
+          method: "POST",
+          headers: { "content-type": "application/x-www-form-urlencoded" },
+          body: "state=one&code=a&code=b",
+        },
+      ],
+      [
+        "/oauth/callback",
+        {
+          method: "POST",
+          headers: { "content-type": "application/x-www-form-urlencoded" },
+          body: "state=one&code=code&error=access_denied",
+        },
+      ],
+    ] as [string, RequestInit | undefined][]) {
+      const response = await app.request(path, options);
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toMatchObject({ error: { code: "invalid_oauth_callback" } });
+    }
+    const oversized = new Request("http://localhost:3000/oauth/callback", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new Uint8Array(16 * 1024 + 1));
+          controller.close();
+        },
+      }),
+      duplex: "half",
+    } as RequestInit & { duplex: "half" });
+    expect(oversized.headers.has("content-length")).toBe(false);
+    const response = await app.request(oversized);
+    expect(response.status).toBe(413);
+    await expect(response.json()).resolves.toMatchObject({ error: { code: "payload_too_large" } });
+    expect(complete).not.toHaveBeenCalled();
+    expect(reject).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["GET", undefined],
+    ["POST", 0],
+    ["GET", 3],
+  ] as const)(
+    "lists OAuth connections after the %s callback completes with close delay %s",
+    async (method, oauthCloseDelaySeconds) => {
       const app = createTestServer([oauthProvider], { oauthCloseDelaySeconds }).createApp();
       const config = await app.request("/api/oauth/configs/oauth_example", {
         method: "PUT",
@@ -1931,7 +1999,14 @@ describe("ConnectServer", () => {
         vi.fn(async () => Response.json({ access_token: "access-token", token_type: "Bearer" })),
       );
 
-      const callback = await app.request(`/oauth/callback?state=${state}&code=example-code`);
+      const parameters = new URLSearchParams({ state, code: "example-code" });
+      const callback = await (method === "GET"
+        ? app.request(`/oauth/callback?${parameters}`)
+        : app.request("/oauth/callback", {
+            method,
+            headers: { "content-type": "application/x-www-form-urlencoded; charset=UTF-8" },
+            body: parameters,
+          }));
       const callbackText = await callback.text();
 
       expect(callback.status, callbackText).toBe(200);

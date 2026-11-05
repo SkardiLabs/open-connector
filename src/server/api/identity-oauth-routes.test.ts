@@ -2,6 +2,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { createCatalogStore } from "../../catalog-store.ts";
 import { provider as dropbox } from "../../providers/dropbox/definition.ts";
 import { ProviderLoader } from "../../providers/provider-loader.ts";
+import { provider as slack } from "../../providers/slack/definition.ts";
 import { createConnectApp } from "../connect-app.ts";
 import { TransitFileService } from "../files/transit-files.ts";
 import { AesGcmSecretCodec } from "../secrets/secret-codec.ts";
@@ -140,6 +141,174 @@ it.each([200, 503])("revokes only a temporary Dropbox identity token (provider s
     expect(await database.connectionStore.get("dropbox", "link_identity")).toBeUndefined();
     expect(await database.connectionStore.get("dropbox", "binding_source")).toEqual(installed);
     expect(fetcher.mock.calls.filter(([url]) => String(url).endsWith("/auth/token/revoke"))).toHaveLength(1);
+  } finally {
+    database.close();
+  }
+});
+
+it("keeps Slack OpenID proof separate from content and disposes only its temporary grant", async () => {
+  const database = new SqliteRuntimeDatabase(":memory:");
+  const userInfo = { ok: true, sub: "U456", "https://slack.com/user_id": "U456", "https://slack.com/team_id": "T123" };
+  let identityPayload: unknown = userInfo;
+  let identityToken = { ok: true, access_token: "identity-access", token_type: "Bearer" };
+  let revokePayload: unknown = { ok: true, revoked: true };
+  try {
+    await database.oauthClientConfigStore.set({
+      service: "slack",
+      clientId: "installed-app",
+      clientSecret: "app-secret",
+      extra: {},
+      secretExtra: {},
+    });
+    const fetcher = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      const bearer = new Headers(init?.headers).get("authorization");
+      if (url === "https://slack.com/api/oauth.v2.user.access") {
+        expect((init!.body as URLSearchParams).get("code")).toBe("source-code");
+        return Response.json({ access_token: "source-access", token_type: "user", scope: "channels:read,users:read" });
+      }
+      if (url === "https://slack.com/api/auth.test") {
+        expect(bearer).toBe("Bearer source-access");
+        return Response.json({ ok: true, team_id: "T123", user_id: "U123" });
+      }
+      if (url === "https://slack.com/api/openid.connect.token") {
+        const body = init!.body as URLSearchParams;
+        expect(body.get("redirect_uri")).toBe("https://connector.example/oauth/callback");
+        expect(body.get("client_id")).toBe("installed-app");
+        return Response.json(identityToken);
+      }
+      if (url === "https://slack.com/api/openid.connect.userInfo") {
+        expect(init?.method).toBe("POST");
+        expect(new Headers(init?.headers).get("content-type")).toBe("application/x-www-form-urlencoded");
+        expect(init?.body).toBe("");
+        expect(bearer).toBe(`Bearer ${identityToken.access_token}`);
+        return Response.json(identityPayload);
+      }
+      expect(url).toBe("https://slack.com/api/auth.revoke");
+      expect(bearer).toBe(`Bearer ${identityToken.access_token}`);
+      expect(init?.body).toBeUndefined();
+      return Response.json(revokePayload);
+    });
+    vi.stubGlobal("fetch", fetcher);
+    const { app } = await createConnectApp({
+      catalog: createCatalogStore([slack], { executableActionIds: ["slack.get_current_user"] }),
+      runtimeDatabase: database,
+      providerLoader: new ProviderLoader({ slack: () => import("../../providers/slack/executors.ts") }),
+      transitFiles: new TransitFileService({
+        rootDir: ".tmp/identity-oauth-tests",
+        publicOrigin: "https://connector.example",
+        ttlSeconds: 60,
+        maxBytes: 1024,
+      }),
+      publicOrigin: "https://connector.example",
+      secretCodec: new AesGcmSecretCodec("identity-oauth-test-key"),
+      adminToken: "admin",
+      oauthResultOrigins: ["https://gateway.example"],
+    });
+    const request = (path: string, method = "GET", body?: unknown) =>
+      app.request(path, {
+        method,
+        headers: { "content-type": "application/json", authorization: "Bearer admin" },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+    const start = async (connectionName: string, linkOnly?: unknown) => {
+      const response = await request("/api/oauth/authorizations", "POST", {
+        service: "slack",
+        connectionName,
+        linkOnly,
+      });
+      expect(response.status, await response.clone().text()).toBe(200);
+      return response.json();
+    };
+    const source = await start("binding_source");
+    const contentConsent = new URL(source.authorizationUrl);
+    expect(contentConsent.pathname).toBe("/oauth/v2_user/authorize");
+    expect(contentConsent.searchParams.get("scope")).not.toContain("openid");
+    expect((await app.request(`/oauth/callback?state=${source.state}&code=source-code`)).status).toBe(200);
+    const installed = await database.connectionStore.get("slack", "binding_source");
+    expect(installed?.credential).toMatchObject({ accessToken: "source-access", profile: { accountId: "U123" } });
+    const linkOnly = {
+      clientFromConnection: "binding_source",
+      connectionAlias: "selected",
+      connectionVersionId: "accepted-version",
+      requestedScopes: ["openid", "email"],
+      returnUri: "https://gateway.example/links/callback",
+      returnState: "signed-state",
+    };
+    const refused = await request("/api/oauth/authorizations", "POST", {
+      service: "slack",
+      connectionName: "link_mixed",
+      linkOnly: { ...linkOnly, requestedScopes: ["openid", "channels:read"] },
+    });
+    expect(refused.status).toBe(400);
+    const complete = (state: string) =>
+      app.request("/oauth/callback", {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ state, code: "identity-code" }),
+      });
+    for (const [index, payload] of [
+      { ok: true, revoked: true },
+      { ok: true, revoked: false },
+      { ok: false, revoked: true },
+      { ok: true, revoked: true, error: "invalid_auth" },
+      { ok: true },
+      {},
+      { ok: true, revoked: "true" },
+      null,
+    ].entries()) {
+      revokePayload = payload;
+      const name = `link_identity_${index}`;
+      const identity = await start(name, linkOnly);
+      const consent = new URL(identity.authorizationUrl);
+      expect(consent.pathname).toBe("/openid/connect/authorize");
+      expect(consent.searchParams.get("client_id")).toBe(contentConsent.searchParams.get("client_id"));
+      expect(consent.searchParams.get("scope")).toBe("openid email");
+      expect(consent.searchParams.get("response_mode")).toBe("form_post");
+      const completed = await complete(identity.state);
+      expect(completed.status).toBe(302);
+      expect(new URL(completed.headers.get("location")!).searchParams.get("code")).toBe(identity.state);
+      const result = await request("/v1/actions/slack.get_current_user", "POST", { input: {}, connectionName: name });
+      expect(await result.json()).toMatchObject({
+        success: true,
+        data: { teamId: "T123", userId: "U456", isBot: false },
+      });
+      const deleted = await request("/api/connections/slack", "DELETE", { connectionName: name, revoke: true });
+      expect(await deleted.json()).toMatchObject({ configured: false, revoked: index === 0 ? "done" : "failed" });
+      expect(await database.connectionStore.get("slack", name)).toBeUndefined();
+      expect(await database.connectionStore.get("slack", "binding_source")).toEqual(installed);
+    }
+    revokePayload = { ok: true, revoked: true };
+    for (const [index, payload] of [
+      { ...userInfo, sub: "U999" },
+      { ...userInfo, "https://slack.com/team_id": null },
+      { ...userInfo, "https://slack.com/user_id": 42 },
+      { ok: false },
+    ].entries()) {
+      identityPayload = payload;
+      const name = `link_malformed_${index}`;
+      const identity = await start(name, linkOnly);
+      const before = fetcher.mock.calls.filter(([url]) => String(url).endsWith("auth.revoke")).length;
+      const response = await complete(identity.state);
+      expect(new URL(response.headers.get("location")!).searchParams.get("error")).toBe("provider_error");
+      expect(await database.connectionStore.get("slack", name)).toBeUndefined();
+      expect(fetcher.mock.calls.filter(([url]) => String(url).endsWith("auth.revoke"))).toHaveLength(before + 1);
+    }
+    identityPayload = userInfo;
+    for (const token of [
+      { ok: false, access_token: "identity-error-token", token_type: "Bearer" },
+      { ok: true, access_token: "xoxb-bot-only", token_type: "bot" },
+    ]) {
+      identityToken = token;
+      const identity = await start(`link_rejected_${token.ok}`, linkOnly);
+      const before = fetcher.mock.calls.filter(([url]) => String(url).endsWith("openid.connect.userInfo")).length;
+      const response = await complete(identity.state);
+      expect(new URL(response.headers.get("location")!).searchParams.get("error")).toBe("provider_error");
+      expect(fetcher.mock.calls.filter(([url]) => String(url).endsWith("openid.connect.userInfo"))).toHaveLength(
+        before,
+      );
+    }
+    expect(await database.connectionStore.get("slack", "binding_source")).toEqual(installed);
   } finally {
     database.close();
   }
