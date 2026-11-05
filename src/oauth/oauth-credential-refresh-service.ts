@@ -164,7 +164,7 @@ export class OAuthCredentialRefreshService implements IOAuthCredentialRefresher 
     await requestTokenRevocation({
       revocationUrl,
       requestFormat,
-      successField: identity?.successField,
+      successFields: identity?.successFields,
       token,
       tokenTypeHint: credential.refreshToken ? "refresh_token" : "access_token",
       clientId: config?.clientId,

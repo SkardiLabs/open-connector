@@ -185,7 +185,7 @@ export const provider: ProviderDefinition = {
       identityRevocation: {
         url: "https://slack.com/api/auth.revoke",
         requestFormat: "bearer",
-        successField: "revoked",
+        successFields: ["ok", "revoked"],
       },
     },
     {

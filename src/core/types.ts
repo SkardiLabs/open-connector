@@ -158,8 +158,8 @@ export type OAuth2AuthDefinition = {
   identityRevocation?: {
     url: string;
     requestFormat?: "form" | "bearer";
-    /** A top-level response field that must contain the Boolean true. */
-    successField?: string;
+    /** Top-level response fields that must each contain the Boolean true. */
+    successFields?: string[];
   };
   /**
    * Additional scopes available for explicit selection through requestedScopes or authorization
