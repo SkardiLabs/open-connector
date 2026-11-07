@@ -13,8 +13,13 @@ export function readFeishuResponsePage(
   itemField = "items",
   tokenFields: readonly string[] = ["page_token"],
 ): FeishuResponsePage {
-  const items = objectArray(data[itemField], `Feishu response ${itemField}`, providerResponseError);
   const hasMore = requiredBoolean(data.has_more, "Feishu response has_more", providerResponseError);
+  // An explicitly exhausted listing may omit its empty array. A present
+  // malformed value or an unfinished page still requires valid row evidence.
+  const items =
+    !hasMore && !Object.hasOwn(data, itemField)
+      ? []
+      : objectArray(data[itemField], `Feishu response ${itemField}`, providerResponseError);
   let pageToken: string | undefined;
   for (const field of tokenFields) {
     const value = data[field];

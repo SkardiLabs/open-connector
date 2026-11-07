@@ -80,7 +80,12 @@ describe("Feishu and Lark listing wire failures", () => {
 
         for (const malformed of [
           {},
+          { has_more: true, page_token: "next" },
+          { has_more: "false" },
+          { has_more: 0 },
           { ...first, [fixture.rowField]: null },
+          { [fixture.rowField]: null, has_more: false },
+          { [fixture.rowField]: {}, has_more: false },
           { ...first, [fixture.rowField]: [fixture.row, null] },
           { ...first, [fixture.rowField]: [fixture.row, "invalid"] },
           { ...first, has_more: undefined },
@@ -109,16 +114,14 @@ describe("Feishu and Lark listing wire failures", () => {
         }
 
         // Recovery passes through the same HTTP parser and action adapter.
-        // The final cursor is documented optional; empty/null are accepted too.
-        for (const page_token of [undefined, "", null]) {
-          await expect(
-            execute(
-              fixture.action,
-              fixture.input,
-              { [fixture.rowField]: [], has_more: false, page_token },
-              openBaseUrl,
-            ),
-          ).resolves.toMatchObject({ [resultField]: [], hasMore: false });
+        // Explicit exhaustion permits omitted empty rows. The terminal cursor
+        // is optional too; missing rows alone never establish completion.
+        for (const rows of [{ [fixture.rowField]: [] }, {}]) {
+          for (const page_token of [undefined, "", null]) {
+            await expect(
+              execute(fixture.action, fixture.input, { ...rows, has_more: false, page_token }, openBaseUrl),
+            ).resolves.toMatchObject({ [resultField]: [], hasMore: false });
+          }
         }
       }
 

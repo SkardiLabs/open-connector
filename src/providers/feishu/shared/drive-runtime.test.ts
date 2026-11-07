@@ -60,6 +60,7 @@ describe("Feishu drive permissions", () => {
   it("rejects missing or malformed permissions instead of reporting a complete empty grant", async () => {
     for (const response of [
       {},
+      { has_more: false },
       { members: null },
       { items: null, members: permissionsResponse.items },
       { items: "invalid", members: permissionsResponse.items },
