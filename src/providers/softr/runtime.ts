@@ -1,7 +1,8 @@
 import type { QueryValue } from "../../core/request.ts";
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
-import type { ApiKeyProviderContext, ProviderFetch } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
+import type { ProviderFetch } from "../provider-runtime.ts";
 
 import {
   compactObject,
@@ -13,7 +14,7 @@ import {
   requiredString,
 } from "../../core/cast.ts";
 import { queryParams } from "../../core/request.ts";
-import { providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+import { providerInputError, providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
 
 export const softrApiBaseUrl = "https://tables-api.softr.io/api/v1";
 export const softrValidationPath = "/databases";
@@ -109,7 +110,7 @@ export const softrActionHandlers: ProviderActionHandlers<"softr", SoftrActionHan
       mode: "execute",
       method: "POST",
       query: { fieldNames: optionalBoolean(input.fieldNames) },
-      body: { fields: requiredRecord(input.fields, "fields", invalidInput) },
+      body: { fields: requiredRecord(input.fields, "fields", providerInputError) },
     });
     return { record: readDataObject(payload, "created record") };
   },
@@ -120,12 +121,12 @@ export const softrActionHandlers: ProviderActionHandlers<"softr", SoftrActionHan
       mode: "execute",
       method: "PATCH",
       query: { fieldNames: optionalBoolean(input.fieldNames) },
-      body: { fields: requiredRecord(input.fields, "fields", invalidInput) },
+      body: { fields: requiredRecord(input.fields, "fields", providerInputError) },
     });
     return { record: readDataObject(payload, "updated record") };
   },
   async delete_record(input, context) {
-    const recordId = requiredString(input.recordId, "recordId", invalidInput);
+    const recordId = requiredString(input.recordId, "recordId", providerInputError);
     await requestSoftrJson({
       path: `${tablePath(input)}/records/${encodeURIComponent(recordId)}`,
       context,
@@ -263,9 +264,5 @@ function tablePath(input: Record<string, unknown>): string {
 }
 
 function pathValue(value: unknown, fieldName: string): string {
-  return encodeURIComponent(requiredString(value, fieldName, invalidInput));
-}
-
-function invalidInput(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
+  return encodeURIComponent(requiredString(value, fieldName, providerInputError));
 }

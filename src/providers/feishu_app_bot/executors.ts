@@ -5,12 +5,14 @@ import type {
   ProviderProxyExecutor,
   TransitFileWriter,
 } from "../../core/types.ts";
+import type { IntegrationDefinition } from "../../triggers/common/integration.ts";
+import type { PollDefinition } from "../../triggers/common/poll.ts";
 import type { FeishuActionRuntimeContext } from "../feishu/shared/client.ts";
-import type { ProviderActionHandlerSubset } from "../provider-runtime.ts";
+import type { ProviderActionHandlerSubset } from "../provider-executors.ts";
 
 import { Buffer } from "node:buffer";
-import { compactObject, optionalBoolean, optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
-import { assertPublicHttpUrl, readBoundedResponseBytes } from "../../core/request.ts";
+import { compactObject, optionalBoolean, optionalRecord, optionalString } from "../../core/cast.ts";
+import { assertPublicHttpUrl, storeResponseInTransit } from "../../core/request.ts";
 import { createFeishuApplicationActionHandlers } from "../feishu/shared/application-runtime.ts";
 import { createFeishuBaseAdvancedActionHandlers } from "../feishu/shared/base-advanced-runtime.ts";
 import { createFeishuBaseActionHandlers } from "../feishu/shared/base-runtime.ts";
@@ -35,25 +37,27 @@ import { createFeishuTaskActionHandlers } from "../feishu/shared/task-runtime.ts
 import { createFeishuVcActionHandlers } from "../feishu/shared/vc-runtime.ts";
 import { createFeishuWhiteboardActionHandlers } from "../feishu/shared/whiteboard-runtime.ts";
 import { createFeishuWikiActionHandlers } from "../feishu/shared/wiki-runtime.ts";
+import { requireCustomCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors, getProviderActionHandler, mapProviderActionHandlers } from "../provider-executors.ts";
 import {
   createProviderProxyUrl,
-  defineProviderExecutors,
-  getProviderActionHandler,
-  mapProviderActionHandlers,
   normalizeProviderProxyHeaders,
+  readProviderProxyErrorMessage,
+  readProviderProxyResponse,
+  toProviderProxyError,
+} from "../provider-proxy.ts";
+import {
   providerFetch,
   ProviderRequestError,
   providerUserAgent,
-  readProviderProxyErrorMessage,
-  readProviderProxyResponse,
-  requireCustomCredential,
-  toProviderProxyError,
+  requiredInputString,
+  defaultProviderRequestTimeoutMs,
 } from "../provider-runtime.ts";
 import { feishuAppBotActions, feishuAppBotProviderScopes } from "./actions.ts";
+import { feishuEvents } from "./trigger-on-event.ts";
 
 const service = "feishu_app_bot";
 const feishuOpenBaseUrl = "https://open.feishu.cn/open-apis";
-const feishuRequestTimeoutMs = 30_000;
 const feishuTenantAccessTokenRefreshSkewMs = 60_000;
 const feishuMaxImageUploadSourceBytes = 10 * 1024 * 1024;
 const feishuMaxFileUploadSourceBytes = 30 * 1024 * 1024;
@@ -61,7 +65,7 @@ const feishuImageUploadType = "message";
 const feishuRateLimitedErrorCodes = new Set([11232, 11233, 11247, 230020, 230047, 99991400, 1000004, 1000005]);
 const feishuCredentialExpiredErrorCodes = new Set([
   4001, 10005, 10012, 10013, 10014, 10015, 20002, 20005, 20013, 20014, 99991543, 99991661, 99991663, 99991664, 99991665,
-  99991671, 99991673,
+  99991668, 99991671, 99991677,
 ]);
 const feishuScopeMissingErrorCodes = new Set([10023, 11223, 11229, 11241, 99991672, 99991676, 99991679]);
 
@@ -218,6 +222,7 @@ async function createFeishuAppBotSharedHandlers(
 ): Promise<Record<string, (input: Record<string, unknown>) => Promise<unknown>>> {
   const accessToken = await fetchTenantAccessToken(context, context.fetcher, "execute", context.signal);
   const runtimeContext: FeishuActionRuntimeContext = {
+    openBaseUrl: feishuOpenBaseUrl,
     identity: "tenant",
     accessToken,
     fetcher: context.fetcher,
@@ -237,6 +242,7 @@ async function createFeishuAppBotSharedHandlers(
     ...createFeishuDriveActionHandlers(request),
     ...createFeishuDriveAdvancedActionHandlers({
       request,
+      openBaseUrl: feishuOpenBaseUrl,
       accessToken,
       fetcher: context.fetcher,
       transitFiles: context.transitFiles,
@@ -251,6 +257,7 @@ async function createFeishuAppBotSharedHandlers(
     ...createFeishuOkrActionHandlers(request),
     ...createFeishuFileActionHandlers({
       request,
+      openBaseUrl: feishuOpenBaseUrl,
       accessToken,
       fetcher: context.fetcher,
       transitFiles: context.transitFiles,
@@ -261,6 +268,7 @@ async function createFeishuAppBotSharedHandlers(
     ...createFeishuMarkdownActionHandlers(createFeishuMarkdownRuntimeContext({ request, context: runtimeContext })),
     ...createFeishuDomainMediaActionHandlers({
       request,
+      openBaseUrl: feishuOpenBaseUrl,
       accessToken,
       fetcher: context.fetcher,
       transitFiles: context.transitFiles,
@@ -371,8 +379,8 @@ export const credentialValidators: CredentialValidators = {
 
 function readFeishuAppBotCredential(input: Record<string, string>): FeishuAppBotCredential {
   return {
-    appId: requiredFeishuString(input.appId, "appId"),
-    appSecret: requiredFeishuString(input.appSecret, "appSecret"),
+    appId: requiredInputString(input.appId, "appId"),
+    appSecret: requiredInputString(input.appSecret, "appSecret"),
   };
 }
 
@@ -496,7 +504,7 @@ async function uploadImage(
   input: Record<string, unknown>,
   context: FeishuAppBotActionContext,
 ): Promise<Record<string, unknown>> {
-  const source = await resolveFeishuImageUploadSource(requiredFeishuString(input.imageUrl, "imageUrl"), context);
+  const source = await resolveFeishuImageUploadSource(requiredInputString(input.imageUrl, "imageUrl"), context);
   const formData = new FormData();
   formData.set("image_type", feishuImageUploadType);
   formData.set("image", new File([Buffer.from(source.bytes)], source.fileName, { type: source.mimeType }));
@@ -517,12 +525,12 @@ async function uploadFile(
   context: FeishuAppBotActionContext,
 ): Promise<Record<string, unknown>> {
   const source = await resolveFeishuFileUploadSource(
-    requiredFeishuString(input.fileUrl, "fileUrl"),
+    requiredInputString(input.fileUrl, "fileUrl"),
     optionalString(input.fileName),
     context,
   );
   const formData = new FormData();
-  formData.set("file_type", requiredFeishuString(input.fileType, "fileType"));
+  formData.set("file_type", requiredInputString(input.fileType, "fileType"));
   formData.set("file_name", source.fileName);
   const duration = stringifyOptionalScalar(input.duration);
   if (duration) {
@@ -545,7 +553,7 @@ async function downloadImage(
   input: Record<string, unknown>,
   context: FeishuAppBotActionContext,
 ): Promise<Record<string, unknown>> {
-  const imageKey = requiredFeishuString(input.imageKey, "imageKey");
+  const imageKey = requiredInputString(input.imageKey, "imageKey");
   const rawResponse = await feishuRawRequest({
     method: "GET",
     path: `/im/v1/images/${encodeURIComponent(imageKey)}`,
@@ -569,7 +577,7 @@ async function downloadFile(
   input: Record<string, unknown>,
   context: FeishuAppBotActionContext,
 ): Promise<Record<string, unknown>> {
-  const fileKey = requiredFeishuString(input.fileKey, "fileKey");
+  const fileKey = requiredInputString(input.fileKey, "fileKey");
   const rawResponse = await feishuRawRequest({
     method: "GET",
     path: `/im/v1/files/${encodeURIComponent(fileKey)}`,
@@ -597,10 +605,10 @@ async function sendMessage(
     {
       method: "POST",
       path: "/im/v1/messages",
-      query: [["receive_id_type", requiredFeishuString(input.receiveIdType, "receiveIdType")]],
+      query: [["receive_id_type", requiredInputString(input.receiveIdType, "receiveIdType")]],
       body: compactObject({
-        receive_id: requiredFeishuString(input.receiveId, "receiveId"),
-        msg_type: requiredFeishuString(input.msgType, "msgType"),
+        receive_id: requiredInputString(input.receiveId, "receiveId"),
+        msg_type: requiredInputString(input.msgType, "msgType"),
         content: serializeFeishuContent(input.content),
         uuid: optionalString(input.uuid),
       }),
@@ -616,10 +624,10 @@ async function replyMessage(
   return callMessageEndpoint(
     {
       method: "POST",
-      path: `/im/v1/messages/${encodeURIComponent(requiredFeishuString(input.messageId, "messageId"))}/reply`,
+      path: `/im/v1/messages/${encodeURIComponent(requiredInputString(input.messageId, "messageId"))}/reply`,
       body: compactObject({
         content: serializeFeishuContent(input.content),
-        msg_type: requiredFeishuString(input.msgType, "msgType"),
+        msg_type: requiredInputString(input.msgType, "msgType"),
         reply_in_thread: optionalBoolean(input.replyInThread),
         uuid: optionalString(input.uuid),
       }),
@@ -635,7 +643,7 @@ async function getMessage(
   return executeFeishuRequest(
     {
       method: "GET",
-      path: `/im/v1/messages/${encodeURIComponent(requiredFeishuString(input.messageId, "messageId"))}`,
+      path: `/im/v1/messages/${encodeURIComponent(requiredInputString(input.messageId, "messageId"))}`,
       query: compactQueryPairs([
         ["user_id_type", optionalString(input.userIdType)],
         ["card_msg_content_type", optionalString(input.cardMsgContentType)],
@@ -654,8 +662,8 @@ async function listMessages(
       method: "GET",
       path: "/im/v1/messages",
       query: compactQueryPairs([
-        ["container_id_type", requiredFeishuString(input.containerIdType, "containerIdType")],
-        ["container_id", requiredFeishuString(input.containerId, "containerId")],
+        ["container_id_type", requiredInputString(input.containerIdType, "containerIdType")],
+        ["container_id", requiredInputString(input.containerId, "containerId")],
         ["start_time", stringifyOptionalScalar(input.startTime)],
         ["end_time", stringifyOptionalScalar(input.endTime)],
         ["sort_type", optionalString(input.sortType)],
@@ -696,7 +704,7 @@ async function searchChats(
       method: "GET",
       path: "/im/v1/chats/search",
       query: compactQueryPairs([
-        ["query", requiredFeishuString(input.query, "query")],
+        ["query", requiredInputString(input.query, "query")],
         ["user_id_type", optionalString(input.userIdType)],
         ["page_size", stringifyOptionalScalar(input.pageSize)],
         ["page_token", optionalString(input.pageToken)],
@@ -713,7 +721,7 @@ async function getChat(
   return executeFeishuRequest(
     {
       method: "GET",
-      path: `/im/v1/chats/${encodeURIComponent(requiredFeishuString(input.chatId, "chatId"))}`,
+      path: `/im/v1/chats/${encodeURIComponent(requiredInputString(input.chatId, "chatId"))}`,
       query: compactQueryPairs([["user_id_type", optionalString(input.userIdType)]]),
     },
     context,
@@ -727,7 +735,7 @@ async function listChatMembers(
   return executeFeishuRequest(
     {
       method: "GET",
-      path: `/im/v1/chats/${encodeURIComponent(requiredFeishuString(input.chatId, "chatId"))}/members`,
+      path: `/im/v1/chats/${encodeURIComponent(requiredInputString(input.chatId, "chatId"))}/members`,
       query: compactQueryPairs([
         ["member_id_type", optionalString(input.memberIdType)],
         ["page_size", stringifyOptionalScalar(input.pageSize)],
@@ -745,7 +753,7 @@ async function recallMessage(
   return executeFeishuRequest(
     {
       method: "DELETE",
-      path: `/im/v1/messages/${encodeURIComponent(requiredFeishuString(input.messageId, "messageId"))}`,
+      path: `/im/v1/messages/${encodeURIComponent(requiredInputString(input.messageId, "messageId"))}`,
     },
     context,
   );
@@ -758,9 +766,9 @@ async function editMessage(
   return callMessageEndpoint(
     {
       method: "PUT",
-      path: `/im/v1/messages/${encodeURIComponent(requiredFeishuString(input.messageId, "messageId"))}`,
+      path: `/im/v1/messages/${encodeURIComponent(requiredInputString(input.messageId, "messageId"))}`,
       body: {
-        msg_type: requiredFeishuString(input.msgType, "msgType"),
+        msg_type: requiredInputString(input.msgType, "msgType"),
         content: serializeFeishuContent(input.content),
       },
     },
@@ -775,10 +783,10 @@ async function addMessageReaction(
   return executeFeishuRequest(
     {
       method: "POST",
-      path: `/im/v1/messages/${encodeURIComponent(requiredFeishuString(input.messageId, "messageId"))}/reactions`,
+      path: `/im/v1/messages/${encodeURIComponent(requiredInputString(input.messageId, "messageId"))}/reactions`,
       body: {
         reaction_type: {
-          emoji_type: requiredFeishuString(input.emojiType, "emojiType"),
+          emoji_type: requiredInputString(input.emojiType, "emojiType"),
         },
       },
     },
@@ -793,7 +801,7 @@ async function listMessageReactions(
   return executeFeishuRequest(
     {
       method: "GET",
-      path: `/im/v1/messages/${encodeURIComponent(requiredFeishuString(input.messageId, "messageId"))}/reactions`,
+      path: `/im/v1/messages/${encodeURIComponent(requiredInputString(input.messageId, "messageId"))}/reactions`,
       query: compactQueryPairs([
         ["reaction_type", optionalString(input.reactionType)],
         ["page_token", optionalString(input.pageToken)],
@@ -812,7 +820,7 @@ async function removeMessageReaction(
   return executeFeishuRequest(
     {
       method: "DELETE",
-      path: `/im/v1/messages/${encodeURIComponent(requiredFeishuString(input.messageId, "messageId"))}/reactions/${encodeURIComponent(requiredFeishuString(input.reactionId, "reactionId"))}`,
+      path: `/im/v1/messages/${encodeURIComponent(requiredInputString(input.messageId, "messageId"))}/reactions/${encodeURIComponent(requiredInputString(input.reactionId, "reactionId"))}`,
     },
     context,
   );
@@ -827,7 +835,7 @@ async function pinMessage(
       method: "POST",
       path: "/im/v1/pins",
       body: {
-        message_id: requiredFeishuString(input.messageId, "messageId"),
+        message_id: requiredInputString(input.messageId, "messageId"),
       },
     },
     context,
@@ -843,7 +851,7 @@ async function listPins(
       method: "GET",
       path: "/im/v1/pins",
       query: compactQueryPairs([
-        ["chat_id", requiredFeishuString(input.chatId, "chatId")],
+        ["chat_id", requiredInputString(input.chatId, "chatId")],
         ["start_time", stringifyOptionalScalar(input.startTime)],
         ["end_time", stringifyOptionalScalar(input.endTime)],
         ["page_size", stringifyOptionalScalar(input.pageSize)],
@@ -861,7 +869,7 @@ async function removePin(
   return executeFeishuRequest(
     {
       method: "DELETE",
-      path: `/im/v1/pins/${encodeURIComponent(requiredFeishuString(input.messageId, "messageId"))}`,
+      path: `/im/v1/pins/${encodeURIComponent(requiredInputString(input.messageId, "messageId"))}`,
     },
     context,
   );
@@ -1114,7 +1122,7 @@ function normalizeFeishuError(input: {
   if (input.phase === "validate") {
     return new ProviderRequestError(input.status >= 500 ? 502 : 400, taggedMessage, input.envelope);
   }
-  if (input.status === 401 || (code !== null && feishuCredentialExpiredErrorCodes.has(code))) {
+  if (code !== null && feishuCredentialExpiredErrorCodes.has(code)) {
     return new ProviderRequestError(401, taggedMessage, input.envelope);
   }
   if (code !== null && feishuScopeMissingErrorCodes.has(code)) {
@@ -1124,9 +1132,9 @@ function normalizeFeishuError(input: {
     return new ProviderRequestError(400, message, input.envelope);
   }
   if (input.status >= 400 && input.status < 500) {
-    return new ProviderRequestError(input.status, taggedMessage, input.envelope);
+    return new ProviderRequestError(input.status, taggedMessage, input.envelope, "provider_error");
   }
-  return new ProviderRequestError(502, taggedMessage, input.envelope);
+  return new ProviderRequestError(502, taggedMessage, input.envelope, "provider_error");
 }
 
 async function uploadFeishuMediaTransitFile(input: {
@@ -1145,14 +1153,13 @@ async function uploadFeishuMediaTransitFile(input: {
 
     const mimeType = normalizeMimeType(response.headers.get("content-type")) ?? "application/octet-stream";
     const fileName = input.preferredFileName ?? buildFeishuTransitFileName(input.idValue, mimeType);
-    const bytes = await readBoundedResponseBytes(response, {
-      maxBytes: input.context.transitFiles.maxBytes,
+    const upload = await storeResponseInTransit(response, input.context.transitFiles, {
+      name: fileName,
+      mimeType,
       fieldName: `Feishu ${input.actionName} output`,
       createError: (message) => new ProviderRequestError(413, message),
+      signal: input.context.signal,
     });
-    const upload = await input.context.transitFiles.create(
-      new File([Uint8Array.from(bytes)], fileName, { type: mimeType }),
-    );
 
     return {
       [input.idKey]: input.idValue,
@@ -1189,10 +1196,6 @@ function serializeFeishuContent(value: unknown): string {
     throw new ProviderRequestError(400, "content must be a JSON string or object");
   }
   return JSON.stringify(objectValue);
-}
-
-function requiredFeishuString(value: unknown, fieldName: string): string {
-  return requiredString(value, fieldName, (message) => new ProviderRequestError(400, message));
 }
 
 function stringifyOptionalScalar(value: unknown): string | undefined {
@@ -1402,7 +1405,7 @@ function normalizeMimeType(value: string | null | undefined): string | undefined
 
 function createFeishuRequestSignal(parent?: AbortSignal): FeishuRequestSignal {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), feishuRequestTimeoutMs);
+  const timeout = setTimeout(() => controller.abort(), defaultProviderRequestTimeoutMs);
   const abortFromParent = (): void => controller.abort(parent?.reason);
   if (parent?.aborted) {
     controller.abort(parent.reason);
@@ -1422,3 +1425,5 @@ function createFeishuRequestSignal(parent?: AbortSignal): FeishuRequestSignal {
 function isAbortError(error: unknown): boolean {
   return error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError");
 }
+
+export const triggers: readonly (IntegrationDefinition | PollDefinition)[] = [...feishuEvents];

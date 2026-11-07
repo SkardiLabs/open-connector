@@ -1,9 +1,13 @@
 import { createHash } from "node:crypto";
 import { optionalInteger, optionalRecord, optionalString } from "../../core/cast.ts";
-import { createProviderTimeout, providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+import {
+  createProviderTimeout,
+  providerUserAgent,
+  ProviderRequestError,
+  providerResponseError,
+} from "../provider-runtime.ts";
 
 export const qichachaApiBaseUrl = "https://api.qichacha.com";
-const qichachaRequestTimeoutMs = 30_000;
 const actionPathByName: Record<string, string> = {
   list_company_shareholders: "/ECIPartner/GetList",
   list_company_historical_investments: "/HistoryInvestmentCheck/GetList",
@@ -77,7 +81,7 @@ async function requestQichacha(input: QichachaRequestInput) {
   url.searchParams.set("searchKey", input.searchKey);
   url.searchParams.set("pageIndex", String(input.pageIndex));
   url.searchParams.set("pageSize", String(input.pageSize));
-  const timeoutHandle = createProviderTimeout(undefined, qichachaRequestTimeoutMs);
+  const timeoutHandle = createProviderTimeout(undefined);
   try {
     const response = await input.fetcher(url, {
       method: "GET",
@@ -139,7 +143,7 @@ function createQichachaError(httpStatus: number, payload: unknown) {
   if (httpStatus == 429 || ["频率", "限流", "too many"].some((value) => normalized.includes(value))) {
     return new ProviderRequestError(429, message);
   }
-  return new ProviderRequestError(502, message);
+  return providerResponseError(message);
 }
 
 function readResultRecords(payload: Record<string, unknown>) {

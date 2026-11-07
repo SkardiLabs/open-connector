@@ -1,5 +1,4 @@
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
-import type { SpyfuActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
 import {
   optionalBoolean,
@@ -8,7 +7,12 @@ import {
   optionalRecord as asOptionalObject,
   optionalString as asOptionalString,
 } from "../../core/cast.ts";
-import { ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import {
+  ProviderRequestError,
+  providerUserAgent,
+  providerInputError,
+  defaultProviderRequestTimeoutMs,
+} from "../provider-runtime.ts";
 
 function requiredApiKey(input: { apiKey?: string }): string {
   if (input.apiKey?.trim()) return input.apiKey.trim();
@@ -17,8 +21,6 @@ function requiredApiKey(input: { apiKey?: string }): string {
 
 export const spyfuApiBaseUrl: string = "https://api.spyfu.com";
 export const spyfuProxyBaseUrl: string = `${spyfuApiBaseUrl}/apis`;
-
-const spyfuDefaultRequestTimeoutMs = 30_000;
 
 type SpyfuRequestPhase = "validate" | "execute";
 type SpyfuRequestMethod = "GET" | "POST";
@@ -491,22 +493,6 @@ export async function validateSpyfuCredential(
   };
 }
 
-export async function executeSpyfuAction(
-  input: {
-    apiKey: string;
-    actionName: SpyfuActionName;
-    input: Record<string, unknown>;
-  },
-  fetcher: typeof fetch,
-): Promise<unknown> {
-  const handler = spyfuActionHandlers[input.actionName];
-  if (!handler) {
-    throw new ProviderRequestError(500, `spyfu action is not implemented yet: ${input.actionName}`);
-  }
-
-  return handler(input.input, fetcher, requiredApiKey(input));
-}
-
 function buildSharedKeywordQuery(input: Record<string, unknown>): SpyfuQuery {
   return {
     countryCode: readOptionalString(input.countryCode),
@@ -530,7 +516,7 @@ async function requestSpyfuJson(input: {
   fetcher: typeof fetch;
   phase: SpyfuRequestPhase;
 }) {
-  const timeoutSignal = AbortSignal.timeout(spyfuDefaultRequestTimeoutMs);
+  const timeoutSignal = AbortSignal.timeout(defaultProviderRequestTimeoutMs);
   const method = input.method ?? "GET";
   const url = new URL(input.path, spyfuApiBaseUrl);
   url.searchParams.set("api_key", input.apiKey);
@@ -597,15 +583,15 @@ function createSpyfuError(response: Response, payload: unknown, phase: SpyfuRequ
   }
 
   if (phase === "validate" && response.status >= 400 && response.status < 500) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
 
   if (phase === "execute" && (response.status === 401 || response.status === 403)) {
-    return new ProviderRequestError(409, message);
+    return new ProviderRequestError(401, message);
   }
 
   if (phase === "execute" && response.status >= 400 && response.status < 500) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
 
   return new ProviderRequestError(response.status || 500, message);

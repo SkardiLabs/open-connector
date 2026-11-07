@@ -1,11 +1,11 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { optionalRecord, optionalString } from "../../core/cast.ts";
 import { ProviderRequestError } from "../provider-runtime.ts";
 
-const what3wordsApiBaseUrl = "https://api.what3words.com/v3";
+export const what3wordsApiBaseUrl: string = "https://api.what3words.com/v3";
 const validationWords = "filled.count.soap";
 
 type What3wordsPhase = "validate" | "execute";
@@ -108,7 +108,7 @@ function createWhat3wordsError(response: Response, payload: unknown, phase: What
     return new ProviderRequestError(400, message, payload);
   }
   if (phase === "execute" && (response.status === 401 || response.status === 403)) {
-    return new ProviderRequestError(409, message, payload);
+    return new ProviderRequestError(401, message, payload);
   }
   if (response.status === 400 || response.status === 404 || response.status === 422) {
     return new ProviderRequestError(400, message, payload);

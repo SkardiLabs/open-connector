@@ -1,10 +1,11 @@
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
-import { compactObject } from "../../core/cast.ts";
-import { getProviderActionHandler, ProviderRequestError } from "../provider-runtime.ts";
+import { compactObject, optionalBoolean, optionalNumber } from "../../core/cast.ts";
+import { getProviderActionHandler } from "../provider-executors.ts";
+import { ProviderRequestError, providerInputError, providerResponseError } from "../provider-runtime.ts";
 import { emptyWorkbookBytes, excelWorkbookMimeType } from "./workbook-template.ts";
 
-const graphBaseUrl = "https://graph.microsoft.com/v1.0";
+export const graphBaseUrl = "https://graph.microsoft.com/v1.0";
 const graphHost = "graph.microsoft.com";
 const defaultWorkbookExtensions = [".xlsx", ".xlsm", ".xlsb"] as const;
 const excelUploadChunkSizeBytes = 10 * 1024 * 1024;
@@ -251,10 +252,10 @@ export async function assertExcelResponse(response: Response): Promise<void> {
   const { code, message } = await extractExcelError(response);
 
   if (response.status === 400) {
-    throw new ProviderRequestError(400, message);
+    throw providerInputError(message);
   }
   if (response.status === 401) {
-    throw new ProviderRequestError(409, message);
+    throw new ProviderRequestError(401, message);
   }
   if (response.status === 403 && isScopeError(code, message)) {
     throw new ProviderRequestError(403, message);
@@ -263,7 +264,7 @@ export async function assertExcelResponse(response: Response): Promise<void> {
     throw new ProviderRequestError(403, message);
   }
   if (response.status === 404) {
-    throw new ProviderRequestError(400, message);
+    throw providerInputError(message);
   }
   if (response.status === 429) {
     throw new ProviderRequestError(429, message);
@@ -718,7 +719,7 @@ function asUploadSession(value: Record<string, unknown>) {
 async function buildUploadSessionError(response: Response) {
   const { message } = await extractExcelError(response);
   if (response.status === 400 || response.status === 409 || response.status === 412) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   if (response.status === 404) {
     return new ProviderRequestError(404, "excel upload session expired");
@@ -768,7 +769,7 @@ function toArrayBuffer(bytes: Uint8Array) {
 }
 
 async function createSession(input: Record<string, unknown>, deps: ExcelRuntimeDeps) {
-  const persistChanges = readOptionalBoolean(input.persistChanges) ?? true;
+  const persistChanges = optionalBoolean(input.persistChanges) ?? true;
   const payload = asObject(await createWorkbookSession(buildWorkbookPath(input), persistChanges, deps));
 
   return {
@@ -968,7 +969,7 @@ async function updateWorksheet(input: Record<string, unknown>, deps: ExcelRuntim
   const body = requireNonEmptyMutationBody(
     {
       name: readOptionalString(input.name),
-      position: readOptionalNumber(input.position),
+      position: optionalNumber(input.position),
       visibility: readOptionalString(input.visibility),
     },
     "At least one worksheet field must be provided.",
@@ -1041,8 +1042,8 @@ async function updateRange(input: Record<string, unknown>, deps: ExcelRuntimeDep
       formulasLocal: readOptionalMatrix(input.formulasLocal),
       formulasR1C1: readOptionalMatrix(input.formulasR1C1),
       numberFormat: readOptionalMatrix(input.numberFormat),
-      rowHidden: readOptionalBoolean(input.rowHidden),
-      columnHidden: readOptionalBoolean(input.columnHidden),
+      rowHidden: optionalBoolean(input.rowHidden),
+      columnHidden: optionalBoolean(input.columnHidden),
     },
     "At least one range mutation field must be provided.",
   );
@@ -1100,7 +1101,7 @@ async function mergeCells(input: Record<string, unknown>, deps: ExcelRuntimeDeps
     method: "POST",
     sessionId: readOptionalString(input.sessionId),
     body: compactObject({
-      across: readOptionalBoolean(input.across),
+      across: optionalBoolean(input.across),
     }),
   });
 
@@ -1115,8 +1116,8 @@ async function sortRange(input: Record<string, unknown>, deps: ExcelRuntimeDeps)
     sessionId: readOptionalString(input.sessionId),
     body: compactObject({
       fields: readObjectArray(input.fields),
-      matchCase: readOptionalBoolean(input.matchCase),
-      hasHeaders: readOptionalBoolean(input.hasHeaders),
+      matchCase: optionalBoolean(input.matchCase),
+      hasHeaders: optionalBoolean(input.hasHeaders),
       orientation: readOptionalString(input.orientation),
       method: readOptionalString(input.method),
     }),
@@ -1173,8 +1174,8 @@ async function updateTable(input: Record<string, unknown>, deps: ExcelRuntimeDep
     {
       name: readOptionalString(input.name),
       style: readOptionalString(input.style),
-      showTotals: readOptionalBoolean(input.showTotals),
-      showHeaders: readOptionalBoolean(input.showHeaders),
+      showTotals: optionalBoolean(input.showTotals),
+      showHeaders: optionalBoolean(input.showHeaders),
     },
     "At least one table field must be provided.",
   );
@@ -1231,7 +1232,7 @@ async function addTableRow(input: Record<string, unknown>, deps: ExcelRuntimeDep
       method: "POST",
       sessionId: readOptionalString(input.sessionId),
       body: compactObject({
-        index: readOptionalNumber(input.index),
+        index: optionalNumber(input.index),
         values: requireMatrix(input.values, "values"),
       }),
     }),
@@ -1296,7 +1297,7 @@ async function addTableColumn(input: Record<string, unknown>, deps: ExcelRuntime
       method: "POST",
       sessionId: readOptionalString(input.sessionId),
       body: compactObject({
-        index: readOptionalNumber(input.index),
+        index: optionalNumber(input.index),
         values: readOptionalMatrix(input.values),
       }),
     }),
@@ -1360,7 +1361,7 @@ async function applyTableSort(input: Record<string, unknown>, deps: ExcelRuntime
     sessionId: readOptionalString(input.sessionId),
     body: compactObject({
       fields: readObjectArray(input.fields),
-      matchCase: readOptionalBoolean(input.matchCase),
+      matchCase: optionalBoolean(input.matchCase),
       method: readOptionalString(input.method),
     }),
   });
@@ -1411,7 +1412,7 @@ function buildWorksheetRangePath(input: Record<string, unknown>) {
 function buildWorksheetUsedRangePath(input: Record<string, unknown>) {
   return `${buildWorkbookPath(input)}/worksheets/${encodeURIComponent(
     requireString(input.worksheetId, "worksheetId"),
-  )}/usedRange(valuesOnly=${readOptionalBoolean(input.valuesOnly) === true ? "true" : "false"})`;
+  )}/usedRange(valuesOnly=${optionalBoolean(input.valuesOnly) === true ? "true" : "false"})`;
 }
 
 function buildTablePath(input: Record<string, unknown>) {
@@ -1461,7 +1462,7 @@ async function readJsonResponse<T>(response: Response, label: string) {
 function buildExcelOperationError(payload: Record<string, unknown>, fallbackMessage: string) {
   const errorPayload = asObjectSafe(payload.error);
   const message = readOptionalString(errorPayload?.message) ?? readOptionalString(payload.message) ?? fallbackMessage;
-  return new ProviderRequestError(502, message);
+  return providerResponseError(message);
 }
 
 function normalizeExtensions(value: unknown) {
@@ -1680,7 +1681,7 @@ function delay(ms: number) {
 }
 
 function formatOptionalNumber(value: unknown) {
-  const parsed = readOptionalNumber(value);
+  const parsed = optionalNumber(value);
   return parsed == null ? undefined : String(parsed);
 }
 
@@ -1757,24 +1758,16 @@ function readOptionalString(value: unknown) {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
-function readOptionalBoolean(value: unknown) {
-  return typeof value === "boolean" ? value : undefined;
-}
-
 function requireBoolean(value: unknown, fieldName: string) {
-  const parsed = readOptionalBoolean(value);
+  const parsed = optionalBoolean(value);
   if (parsed == null) {
     throw new ProviderRequestError(400, `${fieldName} is required`);
   }
   return parsed;
 }
 
-function readOptionalNumber(value: unknown) {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
 function requireNumber(value: unknown, fieldName: string) {
-  const parsed = readOptionalNumber(value);
+  const parsed = optionalNumber(value);
   if (parsed == null) {
     throw new ProviderRequestError(400, `${fieldName} is required`);
   }
@@ -1794,7 +1787,7 @@ function readAliasedStringArray(input: Record<string, unknown>, keys: string[]) 
 function requireNonEmptyMutationBody(input: Record<string, unknown>, message: string): Record<string, unknown> {
   const body = compactObject(input);
   if (Object.keys(body).length === 0) {
-    throw new ProviderRequestError(400, message);
+    throw providerInputError(message);
   }
   return body;
 }

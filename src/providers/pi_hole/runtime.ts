@@ -1,5 +1,6 @@
 import type { CredentialValidationResult, TransitFileStore } from "../../core/types.ts";
-import type { ProviderActionHandlerSubset, ProviderFetch } from "../provider-runtime.ts";
+import type { ProviderActionHandlerSubset } from "../provider-executors.ts";
+import type { ProviderFetch } from "../provider-runtime.ts";
 
 import {
   optionalBoolean,
@@ -9,22 +10,23 @@ import {
   optionalRecord,
   optionalString,
   optionalStringArray,
+  recordOrEmpty,
   requiredBoolean,
   requiredRecord,
-  requiredString,
   stringArray,
 } from "../../core/cast.ts";
 import { assertPublicHttpUrl, isPrivateNetworkAccessAllowed, readBoundedResponseBytes } from "../../core/request.ts";
+import { readTransitFileInput } from "../provider-files.ts";
 import {
   createProviderTimeout,
+  providerInputError,
   ProviderRequestError,
   providerUserAgent,
   readProviderJsonBody,
   readProviderTextBody,
-  readTransitFileInput,
+  requiredInputString,
 } from "../provider-runtime.ts";
 
-const piHoleRequestTimeoutMs = 30_000;
 const defaultPiHoleApiPath = "api";
 const piHoleGravityOutputTailChars = 2_000;
 // Keep in sync with the server-side upload cap (FTL MAXFILESIZE).
@@ -77,23 +79,6 @@ export function clearPiHoleSessionCache(): void {
   piHoleLoginInFlight.clear();
 }
 
-/**
- * Release the session currently held in the cache. Best-effort logout used by
- * short-lived callers such as the E2E harness; a failed logout is ignored
- * because the session expires on its own.
- */
-export async function logoutPiHoleSession(context: PiHoleActionContext): Promise<void> {
-  const key = piHoleSessionCacheKey(context);
-  const entry = piHoleSessionCache.get(key);
-  piHoleSessionCache.delete(key);
-  if (!entry?.sid) {
-    return;
-  }
-  try {
-    await performPiHoleRequest({ context, method: "DELETE", path: "auth", sid: entry.sid });
-  } catch {}
-}
-
 function buildPiHoleApiUrl(
   context: PiHoleActionContext,
   path: string,
@@ -127,7 +112,7 @@ async function performPiHoleRequest(options: PiHoleRequestOptions & { sid: strin
     body = JSON.stringify(options.body);
   }
 
-  const timeout = createProviderTimeout(context.signal, piHoleRequestTimeoutMs);
+  const timeout = createProviderTimeout(context.signal);
   try {
     return await context.fetcher(url, {
       method: options.method,
@@ -320,18 +305,6 @@ export function resolvePiHoleApiPath(input: {
   return normalizePiHoleApiPath(value);
 }
 
-function piHoleInputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
-}
-
-function readRequiredString(value: unknown, fieldName: string): string {
-  return requiredString(value, fieldName, piHoleInputError);
-}
-
-function readRecordPayload(payload: unknown): Record<string, unknown> {
-  return optionalRecord(payload) ?? {};
-}
-
 function stripPiHoleTook(payload: Record<string, unknown>): Record<string, unknown> {
   const { took: _took, ...rest } = payload;
   return rest;
@@ -344,11 +317,15 @@ function readBlockingStatus(payload: Record<string, unknown>): Record<string, un
   };
 }
 
+// The Pi-hole CLI status marks stay written as `\u` escapes: a bundler re-encodes
+// non-ASCII inside a string literal but cannot rewrite a regex literal, and one
+// character above U+00FF forces V8 to hold the whole minified Workers script as a
+// two-byte UTF-16 string, doubling what the script costs in the isolate heap.
 function readGravityStatus(text: string): string | null {
-  if (/\[✗\]|\berror\b|\bfatal\b|\bfailed\b/i.test(text)) {
+  if (/\[\u2717\]|\berror\b|\bfatal\b|\bfailed\b/i.test(text)) {
     return "failed";
   }
-  if (/\[✓\]\s*done|\bdone\.?\s*$/im.test(text.trimEnd())) {
+  if (/\[\u2713\]\s*done|\bdone\.?\s*$/im.test(text.trimEnd())) {
     return "success";
   }
   return null;
@@ -372,15 +349,15 @@ function readRestartFlag(value: unknown): boolean | undefined {
 
 export const piHoleActionHandlers: ProviderActionHandlerSubset<"pi_hole", PiHoleActionHandler> = {
   async get_overview(_input, context) {
-    const payload = readRecordPayload(await requestPiHoleJson({ context, method: "GET", path: "stats/summary" }));
+    const payload = recordOrEmpty(await requestPiHoleJson({ context, method: "GET", path: "stats/summary" }));
     return { summary: stripPiHoleTook(payload) };
   },
   async get_dns_blocking_status(_input, context) {
-    const payload = readRecordPayload(await requestPiHoleJson({ context, method: "GET", path: "dns/blocking" }));
+    const payload = recordOrEmpty(await requestPiHoleJson({ context, method: "GET", path: "dns/blocking" }));
     return readBlockingStatus(payload);
   },
   async set_dns_blocking(input, context) {
-    const blocking = requiredBoolean(input.blocking, "blocking", piHoleInputError);
+    const blocking = requiredBoolean(input.blocking, "blocking", providerInputError);
     const body: Record<string, unknown> = { blocking };
     if (input.timer !== undefined) {
       if (input.timer === null) {
@@ -388,16 +365,16 @@ export const piHoleActionHandlers: ProviderActionHandlerSubset<"pi_hole", PiHole
       } else {
         const timer = optionalNumber(input.timer);
         if (timer === undefined) {
-          throw piHoleInputError("timer must be a number or null");
+          throw providerInputError("timer must be a number or null");
         }
         body.timer = timer;
       }
     }
-    const payload = readRecordPayload(await requestPiHoleJson({ context, method: "POST", path: "dns/blocking", body }));
+    const payload = recordOrEmpty(await requestPiHoleJson({ context, method: "POST", path: "dns/blocking", body }));
     return readBlockingStatus(payload);
   },
   async get_queries(input, context) {
-    const payload = readRecordPayload(
+    const payload = recordOrEmpty(
       await requestPiHoleJson({
         context,
         method: "GET",
@@ -430,11 +407,11 @@ export const piHoleActionHandlers: ProviderActionHandlerSubset<"pi_hole", PiHole
     };
   },
   async get_query_types(_input, context) {
-    const payload = readRecordPayload(await requestPiHoleJson({ context, method: "GET", path: "stats/query_types" }));
+    const payload = recordOrEmpty(await requestPiHoleJson({ context, method: "GET", path: "stats/query_types" }));
     return { types: optionalRecord(payload.types) ?? {} };
   },
   async get_top_domains(input, context) {
-    const payload = readRecordPayload(
+    const payload = recordOrEmpty(
       await requestPiHoleJson({
         context,
         method: "GET",
@@ -449,7 +426,7 @@ export const piHoleActionHandlers: ProviderActionHandlerSubset<"pi_hole", PiHole
     };
   },
   async get_top_clients(input, context) {
-    const payload = readRecordPayload(
+    const payload = recordOrEmpty(
       await requestPiHoleJson({
         context,
         method: "GET",
@@ -464,7 +441,7 @@ export const piHoleActionHandlers: ProviderActionHandlerSubset<"pi_hole", PiHole
     };
   },
   async get_recent_blocked(input, context) {
-    const payload = readRecordPayload(
+    const payload = recordOrEmpty(
       await requestPiHoleJson({
         context,
         method: "GET",
@@ -475,7 +452,7 @@ export const piHoleActionHandlers: ProviderActionHandlerSubset<"pi_hole", PiHole
     return { blocked: stringArray(payload.blocked, "Pi-hole recent blocked response") };
   },
   async get_upstreams(_input, context) {
-    const payload = readRecordPayload(await requestPiHoleJson({ context, method: "GET", path: "stats/upstreams" }));
+    const payload = recordOrEmpty(await requestPiHoleJson({ context, method: "GET", path: "stats/upstreams" }));
     return {
       upstreams: optionalObjectArray(payload.upstreams, "Pi-hole upstreams response"),
       forwardedQueries: optionalInteger(payload.forwarded_queries) ?? 0,
@@ -483,12 +460,12 @@ export const piHoleActionHandlers: ProviderActionHandlerSubset<"pi_hole", PiHole
     };
   },
   async get_history(_input, context) {
-    const payload = readRecordPayload(await requestPiHoleJson({ context, method: "GET", path: "history" }));
+    const payload = recordOrEmpty(await requestPiHoleJson({ context, method: "GET", path: "history" }));
     return { history: optionalObjectArray(payload.history, "Pi-hole history response") };
   },
   async search_domain(input, context) {
-    const domain = readRequiredString(input.domain, "domain");
-    const payload = readRecordPayload(
+    const domain = requiredInputString(input.domain, "domain");
+    const payload = recordOrEmpty(
       await requestPiHoleJson({
         context,
         method: "GET",
@@ -499,16 +476,16 @@ export const piHoleActionHandlers: ProviderActionHandlerSubset<"pi_hole", PiHole
     return { search: optionalRecord(payload.search) ?? {} };
   },
   async get_config(_input, context) {
-    const payload = readRecordPayload(await requestPiHoleJson({ context, method: "GET", path: "config" }));
+    const payload = recordOrEmpty(await requestPiHoleJson({ context, method: "GET", path: "config" }));
     return { config: optionalRecord(payload.config) ?? {} };
   },
   async update_config(input, context) {
-    const config = requiredRecord(input.config, "config", piHoleInputError);
+    const config = requiredRecord(input.config, "config", providerInputError);
     const restart = input.restart === undefined ? undefined : readRestartFlag(input.restart);
     if (input.restart !== undefined && restart === undefined) {
-      throw piHoleInputError("restart must be a boolean");
+      throw providerInputError("restart must be a boolean");
     }
-    const payload = readRecordPayload(
+    const payload = recordOrEmpty(
       await requestPiHoleJson({
         context,
         method: "PATCH",
@@ -544,11 +521,11 @@ export const piHoleActionHandlers: ProviderActionHandlerSubset<"pi_hole", PiHole
     throw new ProviderRequestError(401, "Pi-hole rejected the session after re-authentication.");
   },
   async restart_dns(_input, context) {
-    const payload = readRecordPayload(await requestPiHoleJson({ context, method: "POST", path: "action/restartdns" }));
+    const payload = recordOrEmpty(await requestPiHoleJson({ context, method: "POST", path: "action/restartdns" }));
     return { status: optionalString(payload.status) ?? null };
   },
   async flush_dns_logs(_input, context) {
-    const payload = readRecordPayload(await requestPiHoleJson({ context, method: "POST", path: "action/flush/logs" }));
+    const payload = recordOrEmpty(await requestPiHoleJson({ context, method: "POST", path: "action/flush/logs" }));
     return { status: optionalString(payload.status) ?? null };
   },
   async export_backup(_input, context) {
@@ -592,9 +569,7 @@ export const piHoleActionHandlers: ProviderActionHandlerSubset<"pi_hole", PiHole
     const file = await readTransitFileInput(input.file, context);
     const form = new FormData();
     form.append("file", new File([file.file], file.name, { type: file.mimeType ?? "application/zip" }));
-    const payload = readRecordPayload(
-      await requestPiHoleJson({ context, method: "POST", path: "teleporter", body: form }),
-    );
+    const payload = recordOrEmpty(await requestPiHoleJson({ context, method: "POST", path: "teleporter", body: form }));
     return { files: optionalStringArray(payload.files) ?? [] };
   },
 };
@@ -608,7 +583,7 @@ export async function validatePiHoleCredential(
   fetcher: ProviderFetch,
   signal?: AbortSignal,
 ): Promise<CredentialValidationResult> {
-  const appPassword = readRequiredString(input.apiKey, "apiKey");
+  const appPassword = requiredInputString(input.apiKey, "apiKey");
   const baseUrl = normalizePiHoleBaseUrl(input.values.baseUrl);
   const apiPath = normalizePiHoleApiPath(input.values.apiPath);
 

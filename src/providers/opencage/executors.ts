@@ -1,6 +1,6 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import {
   compactObject,
@@ -11,9 +11,11 @@ import {
   requiredRecord,
 } from "../../core/cast.ts";
 import { queryFlag } from "../../core/request.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
 import {
-  defineApiKeyProviderExecutors,
   ProviderRequestError,
+  providerResponseError,
   providerUserAgent,
   setSearchParams,
 } from "../provider-runtime.ts";
@@ -38,6 +40,13 @@ export const opencageActionHandlers: ProviderActionHandlers<"opencage", Opencage
 
 export const executors: ProviderExecutors = defineApiKeyProviderExecutors(service, opencageActionHandlers);
 
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: opencageApiBaseUrl,
+  auth: { type: "api_key_query", name: "key" },
+  skipDnsValidation: true,
+});
+
 export const credentialValidators: CredentialValidators = {
   async apiKey(input, { fetcher, signal }) {
     const payload = requiredRecord(
@@ -54,7 +63,7 @@ export const credentialValidators: CredentialValidators = {
         "validate",
       ),
       "OpenCage payload",
-      providerError,
+      providerResponseError,
     );
     const rate = optionalRecord(payload.rate);
 
@@ -202,10 +211,6 @@ function readRequiredString(value: unknown, fieldName: string): string {
 function integerParam(value: unknown): string | undefined {
   const parsed = optionalInteger(value);
   return parsed === undefined ? undefined : String(parsed);
-}
-
-function providerError(message: string): ProviderRequestError {
-  return new ProviderRequestError(502, message);
 }
 
 function isAbortError(error: unknown): boolean {

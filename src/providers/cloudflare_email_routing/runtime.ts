@@ -1,6 +1,7 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
-import type { ProviderFetch, ProviderRuntimeHandler } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ProviderRuntimeHandler } from "../provider-executors.ts";
+import type { ProviderFetch } from "../provider-runtime.ts";
 
 import {
   compactObject,
@@ -11,7 +12,7 @@ import {
   optionalString,
 } from "../../core/cast.ts";
 import { queryParams } from "../../core/request.ts";
-import { ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import { ProviderRequestError, providerUserAgent, providerInputError } from "../provider-runtime.ts";
 
 interface CloudflareEnvelope {
   success?: unknown;
@@ -44,7 +45,7 @@ interface CloudflareAuthContext {
   signal?: AbortSignal;
 }
 
-const apiBaseUrl = "https://api.cloudflare.com/client/v4";
+export const cloudflareEmailRoutingApiBaseUrl = "https://api.cloudflare.com/client/v4";
 
 export const cloudflareEmailRoutingActionHandlers: ProviderActionHandlers<
   "cloudflare_email_routing",
@@ -256,7 +257,7 @@ function buildHeaders(context: { email?: string; apiKey: string }, hasBody: bool
 }
 
 function buildUrl(path: string, query?: Record<string, string | number | boolean | undefined>): string {
-  const url = new URL(`${apiBaseUrl}${path}`);
+  const url = new URL(`${cloudflareEmailRoutingApiBaseUrl}${path}`);
   for (const [key, value] of Object.entries(queryParams(query ?? {}))) url.searchParams.set(key, value);
   return url.toString();
 }
@@ -279,8 +280,7 @@ function normalizeError(
 ): ProviderRequestError {
   const message = readErrorMessage(envelope) ?? `cloudflare request failed with ${response.status}`;
   if (response.status === 429) return new ProviderRequestError(429, message);
-  if (phase === "validate" && [400, 401, 403, 404].includes(response.status))
-    return new ProviderRequestError(400, message);
+  if (phase === "validate" && [400, 401, 403, 404].includes(response.status)) return providerInputError(message);
   return new ProviderRequestError(response.status >= 500 ? 502 : response.status, message);
 }
 

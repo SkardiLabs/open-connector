@@ -4,10 +4,12 @@ import type {
   ExecutionContext,
   ProviderExecutors,
 } from "../../core/types.ts";
-import type { ProviderActionHandlers, ProviderActionName, ProviderRuntimeHandler } from "../provider-runtime.ts";
+import type { ProviderActionHandlers, ProviderActionName, ProviderRuntimeHandler } from "../provider-executors.ts";
 import type { OomolConsoleContext } from "./runtime.ts";
 
-import { createProviderFetch, defineProviderExecutors, requireApiKeyCredential } from "../provider-runtime.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { createProviderFetch } from "../provider-runtime.ts";
 import { createOomolConsoleMemberDirectory } from "./member-directory.ts";
 import { defaultEndpoints } from "./request.ts";
 import { executeOomolConsoleAction } from "./runtime.ts";
@@ -75,6 +77,7 @@ export const executors: ProviderExecutors = defineProviderExecutors<OomolConsole
       teamId: credential.values.teamId?.trim() || undefined,
       fetcher,
       signal: context.signal,
+      logger: context.logger,
     };
   },
   fallbackMessage: "OOMOL Console request failed",
@@ -82,12 +85,13 @@ export const executors: ProviderExecutors = defineProviderExecutors<OomolConsole
 });
 
 export const credentialValidators: CredentialValidators = {
-  async apiKey(input, { fetcher, signal }): Promise<CredentialValidationResult> {
+  async apiKey(input, { fetcher, signal, logger }): Promise<CredentialValidationResult> {
     const context: OomolConsoleContext = {
       apiKey: input.apiKey,
       teamId: input.values.teamId?.trim() || undefined,
       fetcher: createProviderFetch({ fetch: fetcher, skipDnsValidation: true }),
       signal,
+      logger,
     };
     const result = await executeOomolConsoleAction("list_teams", {}, context, context.fetcher, {
       endpoints: defaultEndpoints,

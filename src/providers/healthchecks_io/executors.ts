@@ -1,6 +1,6 @@
 import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import {
   compactObject,
@@ -10,16 +10,18 @@ import {
   optionalString,
   requiredString,
 } from "../../core/cast.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
 import {
-  defineApiKeyProviderExecutors,
-  defineProviderProxy,
+  isAbortLikeError,
+  providerInputError,
   ProviderRequestError,
   providerUserAgent,
+  defaultProviderRequestTimeoutMs,
 } from "../provider-runtime.ts";
 
 const service = "healthchecks_io";
 const healthchecksIoApiBaseUrl = "https://healthchecks.io/api/v3";
-const healthchecksIoDefaultRequestTimeoutMs = 30_000;
 
 type HealthchecksIoPhase = "validate" | "execute";
 type HealthchecksIoMethod = "GET" | "POST" | "DELETE";
@@ -214,7 +216,7 @@ async function requestHealthchecksIoJson(input: {
   body?: Record<string, unknown>;
   emptyBody?: boolean;
 }): Promise<unknown> {
-  const timeoutSignal = AbortSignal.timeout(healthchecksIoDefaultRequestTimeoutMs);
+  const timeoutSignal = AbortSignal.timeout(defaultProviderRequestTimeoutMs);
   const signal = input.context.signal ? AbortSignal.any([input.context.signal, timeoutSignal]) : timeoutSignal;
 
   try {
@@ -399,20 +401,6 @@ function assertUpdateCheckInput(input: Record<string, unknown>): void {
   if (!mutationKeys.some((key) => input[key] !== undefined)) {
     throw new ProviderRequestError(400, "At least one update field must be provided.");
   }
-}
-
-function providerInputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
-}
-
-function isAbortLikeError(error: unknown): boolean {
-  return (
-    !!error &&
-    typeof error === "object" &&
-    "name" in error &&
-    (String((error as { name?: unknown }).name) === "AbortError" ||
-      String((error as { name?: unknown }).name) === "TimeoutError")
-  );
 }
 
 export const proxy: ProviderProxyExecutor = defineProviderProxy({

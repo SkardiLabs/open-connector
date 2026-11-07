@@ -28,6 +28,7 @@ const provider: ProviderDefinition = {
       service: "example",
       name: "echo",
       description: "Echo the input.",
+      operationType: "write",
       requiredScopes: [],
       providerPermissions: [],
       inputSchema: { type: "object", additionalProperties: true },
@@ -39,11 +40,11 @@ const provider: ProviderDefinition = {
 describe("action execution OpenAPI", () => {
   it.each([
     ["generic", {}],
-    ["concrete", { actionId: "example.echo" }],
+    ["concrete", { action: provider.actions[0] }],
   ] satisfies Array<[string, OpenApiDocumentOptions]>)(
     "documents idempotent retries for the %s operation",
     (_name, options) => {
-      const document = createOpenApiDocument([provider], options);
+      const document = createOpenApiDocument(options);
       const path = document.paths["/v1/actions/{actionId}"] as { post: RunOperation };
 
       expect(path.post.parameters).toContainEqual({
@@ -81,8 +82,34 @@ describe("action execution OpenAPI", () => {
     },
   );
 
+  it("documents the same runtime statuses on both /v1 execution routes", () => {
+    const document = createOpenApiDocument();
+    const documentedStatuses = (path: string): string[] =>
+      Object.keys((document.paths[path] as { post: { responses: Record<string, unknown> } }).post.responses);
+
+    // The action route now honors an upstream 413 the way the proxy route did,
+    // and the proxy route now answers 402 the way the action route did. The two
+    // routes derive their status from the same error object, so a status one
+    // route documents and the other hides is a contract the client cannot read.
+    expect(documentedStatuses("/v1/actions/{actionId}")).toContain("413");
+    expect(documentedStatuses("/v1/actions/{actionId}")).toContain("402");
+    expect(documentedStatuses("/v1/proxy/{service}")).toContain("402");
+    expect(documentedStatuses("/v1/proxy/{service}")).toContain("413");
+  });
+
+  it("documents the provider setup route as an administrator route", () => {
+    const document = createOpenApiDocument();
+    const setup = document.paths["/v1/providers/{service}/setup"] as {
+      get: { tags: string[]; description: string; responses: Record<string, unknown> };
+    };
+
+    expect(setup.get.tags).toEqual(["Connections"]);
+    expect(setup.get.description).toContain("administrator");
+    expect(Object.keys(setup.get.responses).sort()).toEqual(["200", "401", "403", "404"]);
+  });
+
   it("documents public /v1 catalog routes with the runtime envelope", () => {
-    const document = createOpenApiDocument([provider]);
+    const document = createOpenApiDocument();
     const search = document.paths["/v1/actions/search"] as {
       get: {
         responses: Record<string, { content?: { "application/json"?: { schema?: { required?: string[] } } } }>;
@@ -94,9 +121,8 @@ describe("action execution OpenAPI", () => {
     };
     const connectedApp = document.components.schemas.RuntimeConnectedApp as {
       required: string[];
-      properties: { alias?: { description?: string } };
+      properties: { alias?: { description?: string }; marketplace?: { required?: string[] } };
     };
-
     const health = document.paths["/v1/health"] as {
       get: {
         responses: Record<
@@ -133,8 +159,10 @@ describe("action execution OpenAPI", () => {
     );
     expect(search.get.responses["404"]).toBeUndefined();
     expect(connectedApp.required).toEqual(expect.arrayContaining(["alias", "isDefault"]));
+    expect(connectedApp.required).not.toContain("marketplace");
+    expect(connectedApp.properties.marketplace?.required).toEqual(["id", "pricing"]);
     expect(connectedApp.properties.alias?.description).toContain("connectionName");
-    expect(connectedApp.properties.alias?.description).not.toContain("x-oomol-connector-alias");
+    expect(connectedApp.properties.alias?.description).toContain("x-oo-connector-alias");
     expect(authenticatedApps.get.summary).toBe(
       "Return authenticated provider service IDs from the supplied candidates.",
     );
@@ -147,7 +175,7 @@ describe("action execution OpenAPI", () => {
   });
 
   it("documents Runtime and token policy management and run audit metadata", () => {
-    const document = createOpenApiDocument([provider]);
+    const document = createOpenApiDocument();
     const runtimePolicyPath = document.paths["/api/runtime-policy"] as {
       get: { responses: Record<string, unknown> };
       put: { responses: Record<string, unknown> };
@@ -196,7 +224,7 @@ describe("action execution OpenAPI", () => {
   });
 
   it("documents stored-token connection IDs without changing deployment PolicyRules", () => {
-    const document = createOpenApiDocument([provider]);
+    const document = createOpenApiDocument();
     const tokenSummary = document.components.schemas.RuntimeTokenSummary as {
       required: string[];
       properties: Record<string, ConnectionGrantSchema>;
@@ -245,3 +273,29 @@ interface ConnectionGrantSchema {
   description: string;
   items: { type: string; minLength: number; maxLength: number; pattern: string };
 }
+
+describe("Slack verification contract", () => {
+  it("documents dedicated bearer authentication and runtime response envelopes", () => {
+    const document = createOpenApiDocument();
+    const route = document.paths["/v1/providers/slackbot/events/verify"] as {
+      post: {
+        security: unknown;
+        responses: Record<
+          string,
+          { content: { "application/json": { schema: { properties: Record<string, unknown> } } } }
+        >;
+      };
+    };
+    expect(route.post.security).toEqual([{ eventVerificationToken: [] }]);
+    expect(document.components.securitySchemes.eventVerificationToken).toMatchObject({
+      type: "http",
+      scheme: "bearer",
+    });
+    for (const status of [200, 400, 401, 403, 404, 409, 413, 500]) {
+      const properties = route.post.responses[status]!.content["application/json"].schema.properties;
+      expect(properties).toHaveProperty("success");
+      expect(properties).toHaveProperty("data");
+      if (status !== 200) expect(properties).toHaveProperty("errorCode");
+    }
+  });
+});

@@ -1,10 +1,10 @@
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { compactObject, optionalRecord } from "../../core/cast.ts";
 import { providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
 
-const textitApiBaseUrl = "https://textit.com/api/v2";
+export const textitApiBaseUrl = "https://textit.com/api/v2";
 
 type TextitResource = "broadcasts" | "contacts" | "groups" | "messages";
 type TextitActionHandler = (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>;

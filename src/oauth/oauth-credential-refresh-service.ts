@@ -1,15 +1,33 @@
-import type { ResolvedCredential } from "../core/types.ts";
+import type { OAuth2AuthDefinition, ResolvedCredential } from "../core/types.ts";
+import type { IProviderLoader } from "../providers/provider-loader.ts";
 import type { OAuthClientConfigService } from "./oauth-client-config-service.ts";
+import type { OAuthTokenErrorFactory, OAuthTokenResult } from "./oauth-token.ts";
 
-import { ConnectionError } from "../connection-service.ts";
+import { ConnectionError } from "../connection-error.ts";
 import { optionalRecord, stringRecord } from "../core/cast.ts";
+import { providerFetch } from "../providers/provider-runtime.ts";
 import { readOAuthClientConfigMetadata } from "./oauth-client-config-service.ts";
-import { expiresAtFromLifetime, requestRefreshToken } from "./oauth-token.ts";
+import { expiresAtFromLifetime, requestRefreshToken, requestTokenRevocation } from "./oauth-token.ts";
 
 type OAuthCredential = Extract<ResolvedCredential, { authType: "oauth2" }>;
 
+/**
+ * What a disconnect did about the grant at the provider: `done` when the
+ * provider's revocation endpoint accepted the token, `failed` when it did not
+ * (or could not be reached) — the credential is deleted locally either way —
+ * `unsupported` when the provider declares no revocation endpoint or the
+ * connection held no OAuth token to revoke, and `skipped` when the caller
+ * asked to keep the grant (`revoke: false`).
+ */
+export type OAuthRevocationOutcome = "done" | "failed" | "unsupported" | "skipped";
+
 export interface IOAuthCredentialRefresher {
   refresh(service: string, credential: OAuthCredential): Promise<OAuthCredential>;
+  /**
+   * Revoke the credential at the provider's `revocationUrl`: `done` or
+   * `unsupported` (none declared); a refusal or an unreachable endpoint throws.
+   */
+  revoke?(service: string, credential: OAuthCredential): Promise<"done" | "unsupported">;
 }
 
 /**
@@ -17,9 +35,11 @@ export interface IOAuthCredentialRefresher {
  */
 export class OAuthCredentialRefreshService implements IOAuthCredentialRefresher {
   private readonly clientConfigs: OAuthClientConfigService;
+  private readonly providerLoader?: IProviderLoader;
 
-  constructor(clientConfigs: OAuthClientConfigService) {
+  constructor(clientConfigs: OAuthClientConfigService, providerLoader?: IProviderLoader) {
     this.clientConfigs = clientConfigs;
+    this.providerLoader = providerLoader;
   }
 
   async refresh(service: string, credential: OAuthCredential): Promise<OAuthCredential> {
@@ -33,25 +53,55 @@ export class OAuthCredentialRefreshService implements IOAuthCredentialRefresher 
       );
     }
 
-    const requestTokenRefresh = (value: string): Promise<OAuthCredential> =>
-      requestRefreshToken({
+    const refreshToken = credential.refreshToken ?? "";
+    const createError: OAuthTokenErrorFactory = (message, failure) =>
+      failure?.errorCode === "invalid_grant" && (failure.status === 400 || failure.status === 401)
+        ? new ConnectionError("oauth_reauth_required", `OAuth authorization is no longer valid. Reconnect ${service}.`)
+        : new ConnectionError("oauth_token_refresh_failed", message);
+    const providerOAuth = await this.providerLoader?.loadProviderOAuthRuntime?.(service);
+    let refreshed: OAuthTokenResult;
+    if (providerOAuth?.refreshAccessToken) {
+      refreshed = await providerOAuth.refreshAccessToken({
+        refreshToken,
+        clientConfig: config,
+        metadata: credential.metadata,
+        providerSecret: credential.providerSecret,
+        fetcher: providerFetch,
+        createError,
+      });
+    } else {
+      refreshed = await requestRefreshToken({
         clientId: config.clientId,
         clientSecret: config.clientSecret,
         responseEnvelope: auth.tokenResponseEnvelope,
-        refreshToken: value,
+        refreshToken,
         extraFields: readOAuthRefreshParameters(credential.providerSecret),
         tokenRequestFields: auth.tokenRequestFields,
         tokenEndpointAuthMethod: auth.tokenEndpointAuthMethod,
         tokenRequestFormat: auth.tokenRequestFormat,
-        tokenUrl: this.clientConfigs.resolveEndpointUrl(service, auth.refreshTokenUrl ?? auth.tokenUrl, config),
-        createError: (message) => new ConnectionError("oauth_token_refresh_failed", message),
+        tokenUrl: this.clientConfigs.resolveEndpointUrl(
+          service,
+          (credential.metadata.linkOnly !== undefined && auth.identityTokenUrl) ||
+            auth.refreshTokenUrl ||
+            auth.tokenUrl,
+          config,
+        ),
+        createError,
       });
-    const refreshed = await requestTokenRefresh(credential.refreshToken ?? "");
+    }
+    // A provider runtime may report an absolute expiry without a lifetime, or a
+    // lifetime without an expiry. Keep a usable lifetime from this response and
+    // fall back to the stored one, so dropping it cannot leave a later refresh
+    // that omits `expires_in` without any expiry to derive. `expiresAtFromLifetime`
+    // is the shared usability rule: non-positive and absurd lifetimes are unusable.
     const expiresIn =
-      refreshed.expiresAt === undefined ? credential.metadata.expires_in : refreshed.metadata.expires_in;
+      expiresAtFromLifetime(refreshed.metadata.expires_in) === undefined
+        ? credential.metadata.expires_in
+        : refreshed.metadata.expires_in;
 
     return {
       ...refreshed,
+      authType: "oauth2",
       refreshToken: refreshed.refreshToken ?? credential.refreshToken,
       // `expires_in` is optional on a refresh response, and a credential without an
       // expiry is never treated as expired again, so the token silently stops being
@@ -60,17 +110,70 @@ export class OAuthCredentialRefreshService implements IOAuthCredentialRefresher 
       // not an option: a refresh only runs once that timestamp is already past, so
       // the stored token would look expired immediately and refresh on every call.
       expiresAt: refreshed.expiresAt ?? expiresAtFromLifetime(expiresIn),
-      providerSecret: credential.providerSecret,
+      providerSecret: refreshed.providerSecret ?? credential.providerSecret,
       profile: credential.profile,
       metadata: {
         ...credential.metadata,
         ...refreshed.metadata,
         // Refresh rotates tokens within the existing authorization, including legacy absence.
         oauthAuthorizationId: credential.metadata.oauthAuthorizationId,
+        linkOnly: credential.metadata.linkOnly,
         expires_in: expiresIn,
         refreshedAt: new Date().toISOString(),
       },
     };
+  }
+
+  /**
+   * Revoke the refresh token, or the access token when none was issued, using
+   * the client configuration the credential was minted under. The provider
+   * determines whether related tokens and the underlying grant are revoked.
+   */
+  async revoke(service: string, credential: OAuthCredential): Promise<"done" | "unsupported"> {
+    let auth: OAuth2AuthDefinition;
+    try {
+      auth = this.clientConfigs.getOAuthDefinition(service);
+    } catch {
+      return "unsupported";
+    }
+    const identity = credential.metadata.linkOnly === undefined ? undefined : auth.identityRevocation;
+    const declaredUrl = identity?.url ?? auth.revocationUrl;
+    const requestFormat = identity?.requestFormat ?? auth.revocationRequestFormat;
+    if (!declaredUrl) {
+      return "unsupported";
+    }
+    const token =
+      requestFormat === "bearer" ? credential.accessToken : credential.refreshToken || credential.accessToken;
+    if (!token) {
+      return "unsupported";
+    }
+    const createError = (message: string): ConnectionError =>
+      new ConnectionError("oauth_token_revocation_failed", message);
+    const config =
+      readOAuthClientConfigMetadata(service, credential.metadata) ?? (await this.clientConfigs.getConfig(service));
+    let revocationUrl: string;
+    if (config) {
+      revocationUrl = this.clientConfigs.resolveEndpointUrl(service, declaredUrl, config);
+    } else if (declaredUrl.includes("{")) {
+      // A templated endpoint ({tenant}) needs the client configuration that
+      // filled it in at sign-in; without one there is nowhere to post to.
+      throw createError(`Configure an OAuth client for ${service} before revoking its token.`);
+    } else {
+      revocationUrl = declaredUrl;
+    }
+    await requestTokenRevocation({
+      revocationUrl,
+      requestFormat,
+      successFields: identity?.successFields,
+      token,
+      tokenTypeHint: credential.refreshToken ? "refresh_token" : "access_token",
+      clientId: config?.clientId,
+      clientSecret: config?.clientSecret,
+      tokenRequestFields: auth.tokenRequestFields,
+      tokenEndpointAuthMethod: auth.tokenEndpointAuthMethod,
+      createError,
+    });
+    return "done";
   }
 }
 

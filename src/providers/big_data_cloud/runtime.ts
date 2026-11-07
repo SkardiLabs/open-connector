@@ -1,6 +1,6 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
-import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-executors.ts";
 
 import { compactObject, optionalRecord, optionalString } from "../../core/cast.ts";
 import { isAbortLikeError, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
@@ -121,7 +121,7 @@ async function requestBigDataCloudJson(input: {
     });
     payload = await readBigDataCloudPayload(response);
   } catch (error) {
-    if (isAbortLikeError(error) || isTimeoutLikeError(error)) {
+    if (isAbortLikeError(error)) {
       throw new ProviderRequestError(504, error instanceof Error ? error.message : "BigDataCloud request timed out");
     }
 
@@ -204,8 +204,4 @@ function mapBigDataCloudError(
   }
 
   return new ProviderRequestError(status || 500, normalizedMessage, payload);
-}
-
-function isTimeoutLikeError(error: unknown): boolean {
-  return error instanceof Error && error.name === "TimeoutError";
 }

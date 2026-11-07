@@ -1,6 +1,6 @@
 import type { CredentialValidationResult, ExecutionResult } from "../../core/types.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { compactObject, optionalInteger, optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
 import { providerUserAgent, ProviderRequestError, toProviderExecutionError } from "../provider-runtime.ts";
@@ -320,12 +320,7 @@ function createRoamScimError(response: Response, payload: unknown, phase: RoamSc
     response.statusText ??
     `Roam SCIM request failed with status ${response.status}`;
   if (response.status === 401 || response.status === 403) {
-    return new ProviderRequestError(
-      phase === "validate" ? 400 : response.status,
-      message,
-      payload,
-      phase === "validate" ? "invalid_input" : "credential_expired",
-    );
+    return new ProviderRequestError(phase === "validate" ? 400 : response.status, message, payload);
   }
   if (response.status === 400 || response.status === 404 || response.status === 409) {
     return new ProviderRequestError(response.status, message, payload, "invalid_input");

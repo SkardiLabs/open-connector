@@ -10,7 +10,12 @@ import {
   optionalString,
   stringArray,
 } from "../../core/cast.ts";
-import { createProviderTimeout, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import {
+  basicAuthorizationHeader,
+  createProviderTimeout,
+  ProviderRequestError,
+  providerUserAgent,
+} from "../provider-runtime.ts";
 
 export type PayPalEnvironment = "sandbox" | "live";
 
@@ -18,8 +23,6 @@ const paypalApiBaseUrls = {
   sandbox: "https://api-m.sandbox.paypal.com",
   live: "https://api-m.paypal.com",
 } as const satisfies Record<PayPalEnvironment, string>;
-
-const paypalRequestTimeoutMs = 30_000;
 
 type PayPalRequestPhase = "validate" | "execute";
 
@@ -304,6 +307,10 @@ function resolvePayPalEnvironment(value: unknown): PayPalEnvironment {
   throw new ProviderRequestError(400, "environment must be sandbox or live");
 }
 
+export function resolvePayPalApiBaseUrl(value: unknown): string {
+  return paypalApiBaseUrls[resolvePayPalEnvironment(value)];
+}
+
 export function createPayPalAccessTokenRequest(input: {
   clientId: string;
   clientSecret: string;
@@ -316,17 +323,13 @@ export function createPayPalAccessTokenRequest(input: {
       headers: {
         accept: "application/json",
         "accept-language": "en_US",
-        authorization: `Basic ${Buffer.from(`${input.clientId}:${input.clientSecret}`).toString("base64")}`,
+        authorization: basicAuthorizationHeader(`${input.clientId}:${input.clientSecret}`),
         "content-type": "application/x-www-form-urlencoded",
         "user-agent": providerUserAgent,
       },
       body: new URLSearchParams({ grant_type: "client_credentials" }).toString(),
     } satisfies RequestInit,
   };
-}
-
-export function readPayPalAccessToken(payload: unknown): string | null {
-  return optionalString(optionalRecord(payload)?.access_token) ?? null;
 }
 
 function resolvePayPalCredential(input: Record<string, string>, fetcher: typeof fetch): PayPalCredentialContext {
@@ -387,7 +390,7 @@ async function paypalApiRequest(input: PayPalApiRequestInput) {
 }
 
 async function fetchPayPalPayload(fetcher: typeof fetch, url: string | URL, init: RequestInit) {
-  const timeout = createProviderTimeout(undefined, paypalRequestTimeoutMs);
+  const timeout = createProviderTimeout(undefined);
   try {
     const response = await fetcher(url, { ...init, signal: timeout.signal });
     return { response, payload: await readPayPalPayload(response) };
@@ -436,7 +439,7 @@ function createPayPalError(response: Response, payload: unknown, phase: PayPalRe
     return new ProviderRequestError(400, message, data);
   }
   if (phase === "execute" && response.status === 401) {
-    return new ProviderRequestError(409, message, data);
+    return new ProviderRequestError(401, message, data);
   }
   if (phase === "execute" && response.status === 403) {
     return new ProviderRequestError(403, message, data);

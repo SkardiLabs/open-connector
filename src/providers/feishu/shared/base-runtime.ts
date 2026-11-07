@@ -1,5 +1,6 @@
 import type { FeishuJsonRequest } from "./client.ts";
 
+import { compactObject, optionalBoolean } from "../../../core/cast.ts";
 import { ProviderRequestError } from "../../provider-runtime.ts";
 
 interface FeishuBaseActionHandler {
@@ -609,16 +610,6 @@ function segment(value: unknown) {
   return encodeURIComponent(requireString(value, "path identifier"));
 }
 
-function compactObject(value: Record<string, unknown>) {
-  const result: Record<string, unknown> = {};
-  for (const [key, item] of Object.entries(value)) {
-    if (item !== undefined) {
-      result[key] = item;
-    }
-  }
-  return result;
-}
-
 function serializeJson(value: unknown) {
   return value === undefined ? undefined : JSON.stringify(value);
 }
@@ -686,10 +677,6 @@ function optionalObject(value: unknown): Record<string, unknown> | undefined {
 
 function optionalNumber(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
-}
-
-function optionalBoolean(value: unknown) {
-  return typeof value === "boolean" ? value : undefined;
 }
 
 function invalidResponse(message: string) {

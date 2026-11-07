@@ -1,19 +1,17 @@
 import type { CredentialValidationResult, ProviderExecutors } from "../../core/types.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { ProspeoActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { compactObject, optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
 import {
-  defineApiKeyProviderExecutors,
-  getProviderActionHandler,
+  isAbortLikeError,
   ProviderRequestError,
   providerUserAgent,
+  defaultProviderRequestTimeoutMs,
 } from "../provider-runtime.ts";
 
 export const prospeoApiBaseUrl = "https://api.prospeo.io";
-
-const defaultRequestTimeoutMs = 30_000;
 
 type ProspeoMode = "validate" | "execute";
 
@@ -163,25 +161,6 @@ export async function validateProspeoCredential(
   };
 }
 
-export async function executeProspeoAction(
-  input: {
-    actionName: ProspeoActionName;
-    input: Record<string, unknown>;
-    apiKey: string;
-  },
-  fetcher: typeof fetch,
-): Promise<unknown> {
-  const handler = getProviderActionHandler(prospeoActionHandlers, input.actionName);
-  if (!handler) {
-    throw new ProviderRequestError(400, `unknown prospeo action: ${input.actionName}`);
-  }
-
-  return handler(input.input, {
-    apiKey: input.apiKey,
-    fetcher,
-  });
-}
-
 export const executors: ProviderExecutors = defineApiKeyProviderExecutors(
   "prospeo",
   prospeoActionHandlers as Record<
@@ -192,7 +171,7 @@ export const executors: ProviderExecutors = defineApiKeyProviderExecutors(
 
 async function requestProspeoJson(input: ProspeoRequestInput, context: ProspeoRequestContext) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), defaultRequestTimeoutMs);
+  const timeout = setTimeout(() => controller.abort(), defaultProviderRequestTimeoutMs);
 
   try {
     const response = await context.fetcher(buildProspeoUrl(input.path), {
@@ -532,11 +511,4 @@ function readFirstObject(input: Record<string, unknown>, keys: string[]) {
 function readNonEmptyString(value: unknown) {
   const text = optionalString(value);
   return text || undefined;
-}
-
-function isAbortLikeError(error: unknown) {
-  return (
-    error instanceof DOMException ||
-    (error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError"))
-  );
 }

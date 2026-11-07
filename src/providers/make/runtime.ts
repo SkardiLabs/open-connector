@@ -1,5 +1,5 @@
 import type { CredentialValidationResult, ResolvedCredential } from "../../core/types.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 import type { ProviderFetch } from "../provider-runtime.ts";
 
 import { compactObject, optionalNumber, optionalRecord, optionalString } from "../../core/cast.ts";
@@ -377,6 +377,10 @@ function normalizeMakeZoneUrl(value: unknown): string {
 
 function buildMakeApiBaseUrl(zoneUrl: string): string {
   return `${zoneUrl}${makeApiVersionPath}`;
+}
+
+export function makeProxyBaseUrl(metadata: Record<string, unknown>): string {
+  return buildMakeApiBaseUrl(normalizeMakeZoneUrl(metadata.zoneUrl));
 }
 
 function isOfficialMakeHostname(hostname: string): boolean {

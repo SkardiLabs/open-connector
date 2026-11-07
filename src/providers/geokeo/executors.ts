@@ -1,9 +1,11 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { compactObject, optionalRecord, optionalString } from "../../core/cast.ts";
-import { defineApiKeyProviderExecutors, ProviderRequestError } from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { ProviderRequestError, providerInputError, providerResponseError } from "../provider-runtime.ts";
 
 const service = "geokeo";
 const geokeoApiBaseUrl = "https://geokeo.com";
@@ -37,6 +39,13 @@ export const geokeoActionHandlers: ProviderActionHandlers<"geokeo", GeokeoAction
 };
 
 export const executors: ProviderExecutors = defineApiKeyProviderExecutors(service, geokeoActionHandlers);
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: geokeoApiBaseUrl,
+  auth: { type: "api_key_query", name: "api" },
+  skipDnsValidation: true,
+});
 
 export const credentialValidators: CredentialValidators = {
   async apiKey(input, { fetcher, signal }) {
@@ -146,14 +155,14 @@ function createGeokeoStatusError(status: string): ProviderRequestError {
   }
 
   if (status === "INVALID_REQUEST") {
-    return new ProviderRequestError(400, status);
+    return providerInputError(status);
   }
 
   if (status === "ACCESS_DENIED") {
-    return new ProviderRequestError(400, status);
+    return providerInputError(status);
   }
 
-  return new ProviderRequestError(502, status);
+  return providerResponseError(status);
 }
 
 function readGeokeoStatus(payload: Record<string, unknown> | undefined): string | undefined {

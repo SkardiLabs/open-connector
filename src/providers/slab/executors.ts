@@ -1,6 +1,6 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import {
   compactObject,
@@ -10,7 +10,9 @@ import {
   requiredString,
   stringArray,
 } from "../../core/cast.ts";
-import { defineApiKeyProviderExecutors, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { providerInputError, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
 
 const service = "slab";
 const slabApiBaseUrl = "https://api.slab.com";
@@ -142,7 +144,7 @@ export const slabActionHandlers: ProviderActionHandlers<"slab", SlabActionHandle
             }
           }
         `,
-        variables: { id: requiredString(input.id, "id", invalidInputError) },
+        variables: { id: requiredString(input.id, "id", providerInputError) },
       },
       context,
     );
@@ -159,7 +161,7 @@ export const slabActionHandlers: ProviderActionHandlers<"slab", SlabActionHandle
             }
           }
         `,
-        variables: { id: requiredString(input.id, "id", invalidInputError) },
+        variables: { id: requiredString(input.id, "id", providerInputError) },
       },
       context,
     );
@@ -176,7 +178,7 @@ export const slabActionHandlers: ProviderActionHandlers<"slab", SlabActionHandle
             }
           }
         `,
-        variables: { ids: stringArray(input.ids, "ids", invalidInputError) },
+        variables: { ids: stringArray(input.ids, "ids", providerInputError) },
       },
       context,
     );
@@ -229,7 +231,7 @@ export const slabActionHandlers: ProviderActionHandlers<"slab", SlabActionHandle
           }
         `,
         variables: compactObject({
-          id: requiredString(input.id, "id", invalidInputError),
+          id: requiredString(input.id, "id", providerInputError),
           ownerId: optionalString(input.ownerId),
           archived: optionalBoolean(input.archived),
           published: optionalBoolean(input.published),
@@ -265,9 +267,9 @@ export const slabActionHandlers: ProviderActionHandlers<"slab", SlabActionHandle
           }
         `,
         variables: compactObject({
-          externalId: requiredString(input.externalId, "externalId", invalidInputError),
-          format: requiredString(input.format, "format", invalidInputError),
-          content: requiredString(input.content, "content", invalidInputError),
+          externalId: requiredString(input.externalId, "externalId", providerInputError),
+          format: requiredString(input.format, "format", providerInputError),
+          content: requiredString(input.content, "content", providerInputError),
           editUrl: optionalString(input.editUrl),
           readUrl: optionalString(input.readUrl),
         }),
@@ -287,7 +289,7 @@ export const slabActionHandlers: ProviderActionHandlers<"slab", SlabActionHandle
             }
           }
         `,
-        variables: { id: requiredString(input.id, "id", invalidInputError) },
+        variables: { id: requiredString(input.id, "id", providerInputError) },
       },
       context,
     );
@@ -304,7 +306,7 @@ export const slabActionHandlers: ProviderActionHandlers<"slab", SlabActionHandle
             }
           }
         `,
-        variables: { id: requiredString(input.id, "id", invalidInputError) },
+        variables: { id: requiredString(input.id, "id", providerInputError) },
       },
       context,
     );
@@ -321,7 +323,7 @@ export const slabActionHandlers: ProviderActionHandlers<"slab", SlabActionHandle
             }
           }
         `,
-        variables: { ids: stringArray(input.ids, "ids", invalidInputError) },
+        variables: { ids: stringArray(input.ids, "ids", providerInputError) },
       },
       context,
     );
@@ -353,7 +355,7 @@ export const slabActionHandlers: ProviderActionHandlers<"slab", SlabActionHandle
           }
         `,
         variables: compactObject({
-          name: requiredString(input.name, "name", invalidInputError),
+          name: requiredString(input.name, "name", providerInputError),
           description: input.description,
           parentId: optionalString(input.parentId),
           memberEditable: optionalString(input.memberEditable),
@@ -397,7 +399,7 @@ export const slabActionHandlers: ProviderActionHandlers<"slab", SlabActionHandle
           }
         `,
         variables: compactObject({
-          id: requiredString(input.id, "id", invalidInputError),
+          id: requiredString(input.id, "id", providerInputError),
           name: optionalString(input.name),
           description: input.description,
           parentId: optionalString(input.parentId),
@@ -423,7 +425,7 @@ export const slabActionHandlers: ProviderActionHandlers<"slab", SlabActionHandle
             }
           }
         `,
-        variables: { id: requiredString(input.id, "id", invalidInputError) },
+        variables: { id: requiredString(input.id, "id", providerInputError) },
       },
       context,
     );
@@ -441,8 +443,8 @@ export const slabActionHandlers: ProviderActionHandlers<"slab", SlabActionHandle
           }
         `,
         variables: {
-          postId: requiredString(input.postId, "postId", invalidInputError),
-          topicId: requiredString(input.topicId, "topicId", invalidInputError),
+          postId: requiredString(input.postId, "postId", providerInputError),
+          topicId: requiredString(input.topicId, "topicId", providerInputError),
         },
       },
       context,
@@ -461,8 +463,8 @@ export const slabActionHandlers: ProviderActionHandlers<"slab", SlabActionHandle
           }
         `,
         variables: {
-          postId: requiredString(input.postId, "postId", invalidInputError),
-          topicId: requiredString(input.topicId, "topicId", invalidInputError),
+          postId: requiredString(input.postId, "postId", providerInputError),
+          topicId: requiredString(input.topicId, "topicId", providerInputError),
         },
       },
       context,
@@ -532,7 +534,7 @@ export const slabActionHandlers: ProviderActionHandlers<"slab", SlabActionHandle
           }
         `,
         variables: compactObject({
-          query: requiredString(input.query, "query", invalidInputError),
+          query: requiredString(input.query, "query", providerInputError),
           types: Array.isArray(input.types) ? input.types : undefined,
           first: input.first,
           after: optionalString(input.after),
@@ -548,6 +550,17 @@ export const slabActionHandlers: ProviderActionHandlers<"slab", SlabActionHandle
 };
 
 export const executors: ProviderExecutors = defineApiKeyProviderExecutors(service, slabActionHandlers);
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: slabApiBaseUrl,
+  auth: { type: "api_key_authorization", prefix: "Bearer " },
+  skipDnsValidation: true,
+  customizeRequest({ headers }) {
+    if (!headers.has("accept")) headers.set("accept", "application/json");
+    if (!headers.has("content-type")) headers.set("content-type", "application/json");
+  },
+});
 
 export const credentialValidators: CredentialValidators = {
   async apiKey(input, { fetcher, signal }) {
@@ -782,8 +795,4 @@ function readArrayField(source: Record<string, unknown>, key: string, label: str
     throw new ProviderRequestError(502, `${label} was not an array`);
   }
   return value;
-}
-
-function invalidInputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
 }

@@ -1,5 +1,5 @@
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 import type { NewRelicActionName } from "./actions.ts";
 
 import {
@@ -16,7 +16,7 @@ import {
 import { ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
 
 const newRelicGraphqlUrl = "https://api.newrelic.com/graphql";
-const newRelicRestBaseUrl = "https://api.newrelic.com";
+export const newRelicRestBaseUrl: string = "https://api.newrelic.com";
 const newRelicUserAgent = providerUserAgent;
 
 type NewRelicRequestPhase = "validate" | "execute";

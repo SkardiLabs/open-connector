@@ -1,6 +1,6 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
-import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-executors.ts";
 
 import { compactObject, optionalRecord, optionalString } from "../../core/cast.ts";
 import {
@@ -11,7 +11,6 @@ import {
 } from "../provider-runtime.ts";
 
 export const whatsableApiBaseUrl = "https://dashboard.whatsable.app/api/whatsapp/messages/v2.0.0";
-const timeoutMs = 30_000;
 
 export const whatsableActionHandlers: ProviderActionHandlers<
   "whatsable",
@@ -53,7 +52,7 @@ async function requestWhatsable(
 }
 
 async function sendWhatsable(input: Record<string, unknown>, context: ApiKeyProviderContext): Promise<Response> {
-  const timeout = createProviderTimeout(context.signal, timeoutMs);
+  const timeout = createProviderTimeout(context.signal);
   try {
     return await context.fetcher(`${whatsableApiBaseUrl}/send`, {
       method: "POST",

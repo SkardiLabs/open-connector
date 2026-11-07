@@ -1,5 +1,5 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 import type { ProviderFetch } from "../provider-runtime.ts";
 
 import {
@@ -15,10 +15,10 @@ import {
   isAbortLikeError,
   providerUserAgent,
   ProviderRequestError,
+  providerInputError,
 } from "../provider-runtime.ts";
 
 export const printavoApiBaseUrl = "https://www.printavo.com/api/v2";
-const printavoDefaultRequestTimeoutMs = 30_000;
 
 export interface PrintavoActionContext {
   token: string;
@@ -400,7 +400,7 @@ async function printavoGraphql(
   context: Pick<PrintavoActionContext, "token" | "email" | "fetcher" | "signal">,
   phase: PrintavoRequestPhase,
 ): Promise<Record<string, unknown>> {
-  const timeout = createProviderTimeout(context.signal, printavoDefaultRequestTimeoutMs);
+  const timeout = createProviderTimeout(context.signal);
   try {
     const response = await context.fetcher(printavoApiBaseUrl, {
       method: "POST",
@@ -463,7 +463,7 @@ async function readPrintavoPayload(response: Response): Promise<unknown> {
 function createPrintavoError(status: number, payload: unknown, phase: PrintavoRequestPhase): ProviderRequestError {
   const message = extractPrintavoErrorMessage(payload) ?? `Printavo request failed with status ${status}`;
   if (phase === "validate" && status >= 400 && status < 500) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   return new ProviderRequestError(status || 500, message);
 }

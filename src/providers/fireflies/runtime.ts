@@ -1,11 +1,11 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { compactObject, optionalRecord, optionalString } from "../../core/cast.ts";
 import { providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
 
-const firefliesGraphqlBaseUrl = "https://api.fireflies.ai";
+export const firefliesGraphqlBaseUrl = "https://api.fireflies.ai";
 const firefliesGraphqlUrl = `${firefliesGraphqlBaseUrl}/graphql`;
 
 const userGroupSelection = `

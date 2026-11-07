@@ -1,4 +1,5 @@
-import type { IConnectionStore, StoredConnection } from "./connection-service.ts";
+import type { CatalogStore } from "./catalog-store.ts";
+import type { IConnectionStore, StoredConnection } from "./connection-store.ts";
 import type { ActionPolicySnapshot } from "./core/action-policy.ts";
 import type { ActionDefinition, ActionExecutor, ProviderDefinition, ResolvedCredential } from "./core/types.ts";
 import type { IProviderLoader } from "./providers/provider-loader.ts";
@@ -19,6 +20,7 @@ const echoAction: ActionDefinition = {
   service: "example",
   name: "echo",
   description: "Echo input.",
+  operationType: "write",
   requiredScopes: [],
   providerPermissions: [],
   inputSchema: {
@@ -46,6 +48,7 @@ const getAccountAction: ActionDefinition = {
   service: "example_auth",
   name: "get_account",
   description: "Return the connected account.",
+  operationType: "read",
   requiredScopes: ["records:read"],
   providerPermissions: [],
   inputSchema: {
@@ -90,6 +93,30 @@ const secondaryCredential: ResolvedCredential = {
 };
 
 describe("MCP server", () => {
+  it.each(["missing", "unreadable"])("returns structured discovery errors for %s action definitions", async (state) => {
+    const catalog = createCatalogStore([exampleProvider]);
+    vi.spyOn(catalog, "getAction").mockImplementation(async () => {
+      if (state === "unreadable") throw new Error("private catalog file path");
+      return undefined;
+    });
+    await withMcpClient(
+      async (client) => {
+        for (const request of [
+          { name: "search_actions", arguments: { service: "example" } },
+          { name: "get_action_guide", arguments: { actionId: "example.echo" } },
+        ]) {
+          const response = await client.callTool(request);
+          expect(response.structuredContent).toMatchObject({
+            ok: false,
+            error: { code: state === "missing" ? "unknown_action" : "internal_error" },
+          });
+          expect(JSON.stringify(response)).not.toContain("private catalog file path");
+        }
+      },
+      { catalog },
+    );
+  });
+
   it("lists the discovery tools through the MCP protocol", async () => {
     await withMcpClient(async (client) => {
       const result = await client.listTools();
@@ -100,6 +127,13 @@ describe("MCP server", () => {
         "search_actions",
         "get_action_guide",
         "execute_action",
+      ]);
+      expect(result.tools.map((tool) => tool.annotations)).toEqual([
+        { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
+        { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
+        { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
+        { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
+        { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
       ]);
     });
   });
@@ -142,6 +176,7 @@ describe("MCP server", () => {
           {
             id: "example.echo",
             service: "example",
+            operationType: "write",
           },
         ],
       });
@@ -160,6 +195,26 @@ describe("MCP server", () => {
           default: true,
         },
       });
+    });
+  });
+
+  it("renders an execute_action example in action guides instead of HTTP requests", async () => {
+    await withMcpClient(async (client) => {
+      const guide = await client.callTool({ name: "get_action_guide", arguments: { actionId: "example.echo" } });
+
+      expect(guide.structuredContent).toMatchObject({
+        ok: true,
+        data: {
+          capability: {
+            operationType: "write",
+          },
+          markdown: expect.stringContaining("Call the `execute_action` tool with these arguments:"),
+        },
+      });
+      const markdown = (guide.structuredContent as { data: { markdown: string } }).data.markdown;
+      expect(markdown).toContain('"actionId": "example.echo"');
+      expect(markdown).not.toContain("curl");
+      expect(markdown).not.toContain("localhost");
     });
   });
 
@@ -214,6 +269,42 @@ describe("MCP server", () => {
       },
       { getPolicySnapshot: async () => policy },
     );
+  });
+
+  it("summarizes capability in search results and keeps the full capability in guides", async () => {
+    await withAuthenticatedMcpClient(async (client) => {
+      const search = await client.callTool({ name: "search_actions", arguments: { service: "example_auth" } });
+      const guide = await client.callTool({
+        name: "get_action_guide",
+        arguments: { actionId: "example_auth.get_account" },
+      });
+
+      expect(search.structuredContent).toEqual({
+        ok: true,
+        data: [
+          expect.objectContaining({
+            id: "example_auth.get_account",
+            capability: {
+              execution: { locallyExecutable: true, needsCredential: true },
+              policy: { allowed: true, checks: [] },
+              connection: {
+                connectionName: "default",
+                profile: { accountId: "account-default", displayName: "Default Account" },
+              },
+            },
+          }),
+        ],
+      });
+      expect(guide.structuredContent).toMatchObject({
+        ok: true,
+        data: {
+          capability: {
+            requiredScopes: ["records:read"],
+            connection: { connectionName: "default", profile: defaultCredential.profile },
+          },
+        },
+      });
+    });
   });
 
   it("uses an explicitly selected connection for guides and execution", async () => {
@@ -641,11 +732,13 @@ function policySnapshotFor(policy: McpPolicyOptions): () => Promise<ActionPolicy
 
 async function withMcpClient(
   run: (client: Client) => Promise<void>,
-  policy: McpPolicyOptions & { signal?: AbortSignal } = {},
+  policy: McpPolicyOptions & { signal?: AbortSignal; catalog?: CatalogStore } = {},
 ): Promise<void> {
-  const catalog = createCatalogStore([exampleProvider], {
-    executableActionIds: ["example.echo"],
-  });
+  const catalog =
+    policy.catalog ??
+    createCatalogStore([exampleProvider], {
+      executableActionIds: ["example.echo"],
+    });
   const providerLoader = new EchoProviderLoader();
   const connections = new ConnectionService({
     catalog,
@@ -762,7 +855,29 @@ class MemoryConnectionStore implements IConnectionStore {
     return this.connections.get(this.key(service, connectionName));
   }
 
-  async set(service: string, connectionName: string, credential: ResolvedCredential): Promise<StoredConnection> {
+  private readonly retirementGenerations = new Map<string, string>();
+
+  async getRetirementGeneration(service: string, connectionName: string): Promise<string> {
+    const key = JSON.stringify([service, connectionName]);
+    let generation = this.retirementGenerations.get(key);
+    if (!generation) {
+      generation = crypto.randomUUID();
+      this.retirementGenerations.set(key, generation);
+    }
+    return generation;
+  }
+
+  async setIfCurrentGeneration(
+    service: string,
+    connectionName: string,
+    credential: ResolvedCredential,
+    retirementGeneration: string,
+  ) {
+    if ((await this.getRetirementGeneration(service, connectionName)) !== retirementGeneration) return undefined;
+    return this.set(service, connectionName, credential);
+  }
+
+  async set(service: string, connectionName: string, credential: ResolvedCredential) {
     const key = this.key(service, connectionName);
     const connection = {
       id: this.connections.get(key)?.id ?? crypto.randomUUID(),
@@ -784,6 +899,7 @@ class MemoryConnectionStore implements IConnectionStore {
   }
 
   async delete(service: string, connectionName: string): Promise<void> {
+    this.retirementGenerations.set(JSON.stringify([service, connectionName]), crypto.randomUUID());
     this.connections.delete(this.key(service, connectionName));
   }
 

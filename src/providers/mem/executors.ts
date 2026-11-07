@@ -1,12 +1,12 @@
 import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
 import { createHash } from "node:crypto";
 import { optionalRecord, optionalString } from "../../core/cast.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
 import {
   createProviderTimeout,
-  defineApiKeyProviderExecutors,
-  defineProviderProxy,
   providerUserAgent,
   ProviderRequestError,
   readProviderTextBody,
@@ -14,7 +14,6 @@ import {
 
 const service = "mem";
 const memApiBaseUrl = "https://api.mem.ai/v2";
-const memRequestTimeoutMs = 30_000;
 const memMaxResponseBytes = 10 * 1024 * 1024;
 
 type MemRequestPhase = "validate" | "execute";
@@ -114,7 +113,7 @@ async function requestMemJson(
   context: MemActionContext,
   phase: MemRequestPhase,
 ): Promise<unknown> {
-  const timeout = createProviderTimeout(context.signal, memRequestTimeoutMs);
+  const timeout = createProviderTimeout(context.signal);
   const headers = new Headers({
     accept: "application/json",
     authorization: `Bearer ${context.apiKey}`,

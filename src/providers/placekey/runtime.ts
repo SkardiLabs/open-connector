@@ -1,6 +1,6 @@
 import type { CredentialValidationResult, ProviderExecutors } from "../../core/types.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import {
   compactObject,
@@ -11,9 +11,10 @@ import {
   requiredString,
 } from "../../core/cast.ts";
 import { compactJson } from "../../core/request.ts";
-import { defineApiKeyProviderExecutors, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
 
-const placekeyApiBaseUrl = "https://api.placekey.io";
+export const placekeyApiBaseUrl: string = "https://api.placekey.io";
 const placekeyLookupPath = "/v1/placekey";
 const placekeyBulkLookupPath = "/v1/placekeys";
 const validationQuery = { latitude: 37.7371, longitude: -122.44283 };

@@ -6,12 +6,10 @@ import type {
 } from "../../core/types.ts";
 
 import { requiredString } from "../../core/cast.ts";
-import {
-  defineProviderExecutors,
-  defineProviderProxy,
-  ProviderRequestError,
-  requireCustomCredential,
-} from "../provider-runtime.ts";
+import { requireCustomCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { basicAuthorizationHeader, ProviderRequestError } from "../provider-runtime.ts";
 import {
   createEchoTikProviderAccountId,
   echotikActionHandlers,
@@ -75,7 +73,7 @@ export const proxy: ProviderProxyExecutor = defineProviderProxy({
     const credential = await requireCustomCredential(context, service);
     const username = requiredCredential(credential.values.username, "username");
     const password = requiredCredential(credential.values.password, "password");
-    headers.set("authorization", `Basic ${btoa(`${username}:${password}`)}`);
+    headers.set("authorization", basicAuthorizationHeader(`${username}:${password}`));
   },
 });
 

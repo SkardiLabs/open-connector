@@ -1,16 +1,11 @@
 import type { CredentialValidationResult, ProviderExecutors } from "../../core/types.ts";
 import type { ExecutionContext } from "../../core/types.ts";
-import type { ProviderActionHandlers, ProviderRuntimeHandler } from "../provider-runtime.ts";
-import type { QuadernoActionName } from "./actions.ts";
+import type { ProviderActionHandlers, ProviderRuntimeHandler } from "../provider-executors.ts";
 
 import { requiredString } from "../../core/cast.ts";
-import {
-  defineProviderExecutors,
-  mapProviderActionSources,
-  providerUserAgent,
-  ProviderRequestError,
-  requireApiKeyCredential,
-} from "../provider-runtime.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors, mapProviderActionSources } from "../provider-executors.ts";
+import { providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
 
 export const quadernoAuthorizationBaseUrl = "https://quadernoapp.com/api";
 
@@ -139,15 +134,6 @@ export async function validateQuadernoCredential(
       validationEndpoint: "/authorization",
     },
   };
-}
-
-export async function executeQuadernoAction(input: QuadernoExecuteInput, fetcher: typeof fetch): Promise<unknown> {
-  const handler =
-    quadernoActionHandlers[(input as QuadernoExecuteInput & { actionName: QuadernoActionName }).actionName];
-  if (!handler) {
-    throw new ProviderRequestError(400, `unknown quaderno action`);
-  }
-  return handler(input, fetcher);
 }
 
 const quadernoRuntimeHandlers: ProviderActionHandlers<

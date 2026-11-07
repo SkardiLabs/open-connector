@@ -6,36 +6,11 @@ import { ProtocolError } from "@modelcontextprotocol/client";
 import { createHash } from "node:crypto";
 import { compactObject } from "../../core/cast.ts";
 import { withMcpClient } from "../mcp-client.ts";
-import { providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
-
-interface OAuthClientConfig {
-  clientId: string;
-  clientSecret: string;
-  redirectUri: string;
-}
-
-interface TokenSet {
-  accessToken: string;
-  refreshToken: string;
-  tokenType: string;
-  expiresAt: string;
-  providerScopes: string[];
-}
+import { providerUserAgent, ProviderRequestError, defaultProviderRequestTimeoutMs } from "../provider-runtime.ts";
 
 type HubspotMcpToolResult = Awaited<ReturnType<Client["callTool"]>>;
 
 export const hubspotMcpEndpoint = "https://mcp.hubspot.com/";
-export const hubspotMcpAuthorizeUrl = "https://mcp.hubspot.com/oauth/authorize/user";
-const hubspotMcpTokenUrl = "https://mcp.hubspot.com/oauth/v3/token";
-const hubspotMcpRequestTimeoutMs = 30_000;
-
-interface HubspotTokenPayload {
-  accessToken: string;
-  refreshToken?: string;
-  tokenType: string;
-  expiresIn: number;
-  providerScopes: string[];
-}
 
 interface HubspotActionContext {
   accessToken: string;
@@ -93,61 +68,6 @@ const directMcpToolNames = new Set([
   "get_campaign_asset_metrics",
   "submit_feedback",
 ]);
-
-export async function exchangeHubspotCode(
-  input: {
-    code: string;
-    clientConfig: OAuthClientConfig;
-    codeVerifier: string;
-  },
-  fetcher: typeof fetch,
-): Promise<TokenSet> {
-  const response = await fetcher(hubspotMcpTokenUrl, {
-    method: "POST",
-    headers: {
-      "content-type": "application/x-www-form-urlencoded",
-    },
-    body: new URLSearchParams({
-      client_id: input.clientConfig.clientId,
-      client_secret: input.clientConfig.clientSecret,
-      code: input.code,
-      code_verifier: input.codeVerifier,
-      grant_type: "authorization_code",
-      redirect_uri: input.clientConfig.redirectUri,
-    }),
-  });
-
-  return normalizeHubspotTokenResponse(response);
-}
-
-export async function refreshHubspotAccessToken(
-  input: {
-    refreshToken: string;
-    clientConfig: OAuthClientConfig;
-    previousProviderScopes?: string[];
-  },
-  fetcher: typeof fetch,
-): Promise<TokenSet> {
-  const response = await fetcher(hubspotMcpTokenUrl, {
-    method: "POST",
-    headers: {
-      "content-type": "application/x-www-form-urlencoded",
-    },
-    body: new URLSearchParams({
-      client_id: input.clientConfig.clientId,
-      client_secret: input.clientConfig.clientSecret,
-      grant_type: "refresh_token",
-      refresh_token: input.refreshToken,
-    }),
-  });
-
-  const tokenSet = await normalizeHubspotTokenResponse(response);
-  return {
-    ...tokenSet,
-    refreshToken: tokenSet.refreshToken || input.refreshToken,
-    providerScopes: tokenSet.providerScopes.length > 0 ? tokenSet.providerScopes : (input.previousProviderScopes ?? []),
-  };
-}
 
 export async function fetchHubspotCurrentAccount(
   accessToken: string,
@@ -463,7 +383,7 @@ async function listHubspotMcpTools(input: { accessToken: string; fetcher: typeof
       mapError: (error) => mapHubspotMcpError("hubspot", error),
     },
     async (client) => {
-      const result = await client.listTools({}, { timeout: hubspotMcpRequestTimeoutMs });
+      const result = await client.listTools({}, { timeout: defaultProviderRequestTimeoutMs });
       if (!result.tools.some((tool) => directMcpToolNames.has(tool.name) || tool.name === "get_user_details")) {
         throw new ProviderRequestError(502, "hubspot MCP did not advertise any supported tools");
       }
@@ -478,14 +398,14 @@ async function callHubspotMcpTool(input: HubspotMcpToolCallInput) {
       bearerToken: input.accessToken,
       service: "hubspot",
       fetcher: input.fetcher,
-      requestTimeoutMs: hubspotMcpRequestTimeoutMs,
+      requestTimeoutMs: defaultProviderRequestTimeoutMs,
       toolName: input.toolName,
       arguments: input.arguments,
     });
     return unwrapHubspotMcpOutput(output);
   } catch (error) {
     if (error instanceof ProviderRequestError && error.status === 401) {
-      throw new ProviderRequestError(409, error.message, undefined, "credential_expired");
+      throw new ProviderRequestError(401, error.message);
     }
     throw error;
   }
@@ -530,7 +450,7 @@ function mapHubspotMcpError(service: string, error: unknown): ProviderRequestErr
     return error;
   }
   if (error instanceof UnauthorizedError) {
-    return new ProviderRequestError(401, `${service} MCP token is invalid or expired`, error, "credential_expired");
+    return new ProviderRequestError(401, `${service} MCP token is invalid or expired`, error);
   }
   if (error instanceof SdkHttpError) {
     const status = error.status;
@@ -566,84 +486,6 @@ function unwrapHubspotMcpOutput(output: unknown) {
   } catch {
     return output;
   }
-}
-
-async function normalizeHubspotTokenResponse(response: Response): Promise<TokenSet> {
-  const payload = parseHubspotTokenPayload(await readHubspotJson(response), response.status);
-
-  return {
-    accessToken: payload.accessToken,
-    refreshToken: payload.refreshToken ?? "",
-    tokenType: payload.tokenType,
-    expiresAt: new Date(Date.now() + payload.expiresIn * 1000).toISOString(),
-    providerScopes: payload.providerScopes,
-  };
-}
-
-async function readHubspotJson(response: Response): Promise<unknown> {
-  let payload: unknown = null;
-  try {
-    payload = await response.json();
-  } catch {
-    payload = null;
-  }
-
-  if (!response.ok) {
-    throw toHubspotError(response.status, payload);
-  }
-
-  return payload;
-}
-
-function parseHubspotTokenPayload(payload: unknown, status: number): HubspotTokenPayload {
-  const body = asObject(payload);
-  if (!body) {
-    throw new ProviderRequestError(500, `malformed hubspot token response (${status})`, undefined, "provider_error");
-  }
-
-  const accessToken = asString(body.access_token);
-  if (!accessToken) {
-    throw new ProviderRequestError(500, "malformed hubspot token response: access_token", undefined, "provider_error");
-  }
-
-  const tokenType = asString(body.token_type);
-  if (!tokenType) {
-    throw new ProviderRequestError(500, "malformed hubspot token response: token_type", undefined, "provider_error");
-  }
-
-  const expiresIn = asPositiveFiniteNumber(body.expires_in);
-  if (expiresIn == null) {
-    throw new ProviderRequestError(500, "malformed hubspot token response: expires_in", undefined, "provider_error");
-  }
-
-  return {
-    accessToken,
-    refreshToken: asString(body.refresh_token) ?? undefined,
-    tokenType,
-    expiresIn,
-    providerScopes: parseHubspotProviderScopes(body),
-  };
-}
-
-function parseHubspotProviderScopes(body: Record<string, unknown>) {
-  const scope = body.scope;
-  if (typeof scope === "string") {
-    return scope
-      .split(" ")
-      .map((item) => item.trim())
-      .filter(Boolean)
-      .sort();
-  }
-
-  const scopes = body.scopes;
-  if (Array.isArray(scopes)) {
-    return scopes
-      .map((item) => asString(item))
-      .filter((item): item is string => Boolean(item))
-      .sort();
-  }
-
-  return [];
 }
 
 function normalizeSearchOutput(output: unknown) {
@@ -749,46 +591,6 @@ function readArrayProperty(body: Record<string, unknown> | undefined, keys: stri
   return [];
 }
 
-function toHubspotError(status: number, payload: unknown) {
-  const message = extractHubspotErrorMessage(payload) ?? `hubspot request failed with status ${status}`;
-
-  if (status === 401) {
-    return new ProviderRequestError(409, message, undefined, "credential_expired");
-  }
-  if (status === 400 || status === 404) {
-    return new ProviderRequestError(status, message, undefined, "invalid_input");
-  }
-  if (status === 429) {
-    return new ProviderRequestError(429, message, undefined, "rate_limited");
-  }
-
-  return new ProviderRequestError(status || 500, message, undefined, "provider_error");
-}
-
-function extractHubspotErrorMessage(payload: unknown): string | null {
-  const body = asObject(payload);
-  if (!body) {
-    return null;
-  }
-
-  const errorDescription = asString(body.error_description);
-  if (errorDescription) {
-    return errorDescription;
-  }
-
-  const message = asString(body.message);
-  if (message) {
-    return message;
-  }
-
-  const error = asString(body.error);
-  if (error) {
-    return error;
-  }
-
-  return null;
-}
-
 function asObject(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -807,13 +609,6 @@ function asString(value: unknown): string | undefined {
     return String(value);
   }
   return undefined;
-}
-
-function asPositiveFiniteNumber(value: unknown): number | null {
-  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
-    return null;
-  }
-  return value;
 }
 
 function asStringArray(value: unknown): string[] | undefined {

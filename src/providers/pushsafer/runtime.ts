@@ -1,17 +1,19 @@
 import type { CredentialValidationResult, ProviderExecutors } from "../../core/types.ts";
-import type { ProviderFetch, ProviderRuntimeHandler } from "../provider-runtime.ts";
+import type { ProviderRuntimeHandler } from "../provider-executors.ts";
+import type { ProviderFetch } from "../provider-runtime.ts";
 
 import { optionalInteger, optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
 import {
-  defineProviderExecutors,
+  providerInputError,
   ProviderRequestError,
   providerUserAgent,
-  requireApiKeyCredential,
+  providerResponseError,
+  defaultProviderRequestTimeoutMs,
 } from "../provider-runtime.ts";
 
 export const pushsaferApiBaseUrl = "https://www.pushsafer.com";
-
-const pushsaferDefaultRequestTimeoutMs = 30_000;
 
 type PushsaferRequestPhase = "validate" | "execute";
 
@@ -29,7 +31,7 @@ export async function validatePushsaferCredential(
   fetcher: typeof fetch,
   signal?: AbortSignal,
 ): Promise<CredentialValidationResult> {
-  const apiKey = requiredString(input.apiKey, "apiKey", invalidInput);
+  const apiKey = requiredString(input.apiKey, "apiKey", providerInputError);
   const username = requireNonEmptyString(input.username, "username");
   const payload = await requestPushsaferJson({
     apiKey,
@@ -79,7 +81,7 @@ export const executors: ProviderExecutors = defineProviderExecutors<PushsaferCon
     const credential = await requireApiKeyCredential(context, "pushsafer");
     return {
       apiKey: credential.apiKey,
-      username: requiredString(credential.values.username, "username", invalidInput),
+      username: requiredString(credential.values.username, "username", providerInputError),
       fetcher,
       signal: context.signal,
     };
@@ -195,7 +197,7 @@ async function requestPushsaferJson(input: PushsaferRequestInput) {
         "user-agent": providerUserAgent,
       },
       body: params,
-      signal: input.signal ?? AbortSignal.timeout(pushsaferDefaultRequestTimeoutMs),
+      signal: input.signal ?? AbortSignal.timeout(defaultProviderRequestTimeoutMs),
     });
     const payload = await readPayload(response);
     if (response.status !== 200) {
@@ -232,7 +234,7 @@ function requireSuccessPayload(payload: unknown) {
   }
   if (record.status !== 1) {
     const message = extractErrorMessage(record) ?? "Pushsafer rejected the request";
-    throw new ProviderRequestError(502, message);
+    throw providerResponseError(message);
   }
   return record;
 }
@@ -245,7 +247,7 @@ function createPushsaferError(status: number, payload: unknown, phase: Pushsafer
   if (status === 250 || status === 255 || status === 401 || status === 403) {
     return new ProviderRequestError(phase === "validate" ? 400 : 401, message);
   }
-  return new ProviderRequestError(502, message);
+  return providerResponseError(message);
 }
 
 function extractErrorMessage(payload: unknown) {
@@ -307,8 +309,4 @@ function requirePayloadInteger(value: unknown, fieldName: string) {
 
 function invalidResponse(fieldName: string) {
   return new ProviderRequestError(502, `Pushsafer returned an invalid ${fieldName} field`);
-}
-
-function invalidInput(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
 }

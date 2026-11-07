@@ -1,18 +1,42 @@
 import type { CredentialValidationResult, ResolvedCredential } from "../../core/types.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
-import type { OAuthProviderContext, ProviderFetch, ProviderRuntimeHandler } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { OAuthProviderContext, ProviderRuntimeHandler } from "../provider-executors.ts";
+import type { ProviderFetch } from "../provider-runtime.ts";
 
 import { compactObject, optionalInteger, optionalRecord, optionalString } from "../../core/cast.ts";
 import { ProviderRequestError } from "../provider-runtime.ts";
 import { calProviderScopes } from "./actions.ts";
 
-const calApiBaseUrl = "https://api.cal.com";
+export const calApiBaseUrl = "https://api.cal.com";
 const calMeApiVersion = "2024-08-13";
 const calBookingsApiVersion = "2024-08-13";
 const calCalendarsApiVersion = "2024-08-13";
 const calEventTypesApiVersion = "2024-06-14";
 const calSchedulesApiVersion = "2024-06-11";
 const calSlotsApiVersion = "2024-09-04";
+
+export function resolveCalProxyApiVersion(pathname: string): string | undefined {
+  const segments = pathname.split("/").filter(Boolean);
+  if (segments[0] !== "v2") return undefined;
+
+  switch (segments[1]) {
+    case "me":
+      return calMeApiVersion;
+    case "bookings":
+      return calBookingsApiVersion;
+    case "calendars":
+    case "destination-calendars":
+      return calCalendarsApiVersion;
+    case "event-types":
+      return calEventTypesApiVersion;
+    case "schedules":
+      return calSchedulesApiVersion;
+    case "slots":
+      return calSlotsApiVersion;
+    default:
+      return undefined;
+  }
+}
 
 type CalActionContext = Pick<OAuthProviderContext, "accessToken" | "tokenType" | "fetcher" | "signal">;
 type CalActionHandler = ProviderRuntimeHandler<OAuthProviderContext>;

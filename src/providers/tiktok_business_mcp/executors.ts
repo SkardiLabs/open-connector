@@ -1,12 +1,13 @@
 import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
-import type { OAuthProviderContext, ProviderActionHandlers, ProviderRuntimeHandler } from "../provider-runtime.ts";
+import type { OAuthProviderContext, ProviderActionHandlers, ProviderRuntimeHandler } from "../provider-executors.ts";
 import type { Client } from "@modelcontextprotocol/client";
 
 import { ProtocolError, SdkHttpError, UnauthorizedError } from "@modelcontextprotocol/client";
 import { createHash } from "node:crypto";
 import { optionalRecord, requiredString } from "../../core/cast.ts";
 import { withMcpClient } from "../mcp-client.ts";
-import { defineOAuthProviderExecutors, providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+import { defineOAuthProviderExecutors } from "../provider-executors.ts";
+import { providerInputError, providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
 
 const service = "tiktok_business_mcp";
 const endpoint = "https://business-api.tiktok.com/open_mcp/tt-ads-mcp-flat";
@@ -43,7 +44,7 @@ export const tiktokBusinessMcpActionHandlers: ProviderActionHandlers<
     return { tools: result.tools };
   },
   async call_tool(input, context) {
-    const toolName = requiredString(input.toolName, "toolName", badRequest);
+    const toolName = requiredString(input.toolName, "toolName", providerInputError);
     const result = await withTikTokMcpClient(context, (client) =>
       client.callTool(
         { name: toolName, arguments: optionalRecord(input.arguments) ?? {} },
@@ -66,7 +67,7 @@ export const credentialValidators: CredentialValidators = {
     const result = await withTikTokMcpClient({ accessToken: input.accessToken, fetcher, signal }, (client) =>
       client.listTools({}, { timeout: requestTimeoutMs, signal }),
     );
-    if (result.tools.length === 0) throw badRequest("TikTok for Business MCP did not expose any tools");
+    if (result.tools.length === 0) throw providerInputError("TikTok for Business MCP did not expose any tools");
     const tokenHash = createHash("sha256").update(input.accessToken).digest("hex").slice(0, 16);
     return {
       profile: {
@@ -105,8 +106,4 @@ function mapTikTokMcpError(error: unknown): ProviderRequestError {
       : "TikTok for Business MCP request failed",
     error,
   );
-}
-
-function badRequest(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
 }

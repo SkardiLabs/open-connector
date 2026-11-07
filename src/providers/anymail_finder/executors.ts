@@ -1,8 +1,10 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
-import type { ApiKeyProviderContext, ProviderActionHandlers, ProviderRuntimeHandler } from "../provider-runtime.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
+import type { ApiKeyProviderContext, ProviderActionHandlers, ProviderRuntimeHandler } from "../provider-executors.ts";
 
 import { compactObject, optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
-import { defineApiKeyProviderExecutors, providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { providerInputError, providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
 
 const service = "anymail_finder";
 const apiBaseUrl = "https://api.anymailfinder.com";
@@ -47,7 +49,7 @@ export const anymailFinderActionHandlers: ProviderActionHandlers<
   async verify_email(input, context) {
     return wrapResult(
       await post("/v5.1/verify-email", context, {
-        email: requiredString(input.email, "email", badRequest),
+        email: requiredString(input.email, "email", providerInputError),
       }),
     );
   },
@@ -55,6 +57,17 @@ export const anymailFinderActionHandlers: ProviderActionHandlers<
 
 export const executors: ProviderExecutors = defineApiKeyProviderExecutors(service, anymailFinderActionHandlers, {
   skipDnsValidation: true,
+});
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: apiBaseUrl,
+  auth: { type: "api_key_header", name: "Authorization" },
+  skipDnsValidation: true,
+  customizeRequest({ headers }) {
+    headers.set("accept", "application/json");
+    headers.set("content-type", "application/json");
+  },
 });
 
 export const credentialValidators: CredentialValidators = {
@@ -80,13 +93,13 @@ function validatePersonSearch(input: Record<string, unknown>): void {
     (Boolean(optionalString(input.firstName)) && Boolean(optionalString(input.lastName)));
   const hasCompany = Boolean(optionalString(input.domain)) || Boolean(optionalString(input.companyName));
   if (hasName && hasCompany) return;
-  throw badRequest("linkedinUrl or a person name together with domain or companyName is required");
+  throw providerInputError("linkedinUrl or a person name together with domain or companyName is required");
 }
 
 function companyFields(input: Record<string, unknown>): Record<string, unknown> {
   const domain = optionalString(input.domain);
   const companyName = optionalString(input.companyName);
-  if (!domain && !companyName) throw badRequest("domain or companyName is required");
+  if (!domain && !companyName) throw providerInputError("domain or companyName is required");
   return { domain, company_name: companyName };
 }
 
@@ -161,8 +174,4 @@ function readNumber(input: Record<string, unknown>, key: string): number {
   const value = input[key];
   if (typeof value === "number" && Number.isFinite(value)) return value;
   throw new ProviderRequestError(502, `Anymail Finder response is missing ${key}`);
-}
-
-function badRequest(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
 }

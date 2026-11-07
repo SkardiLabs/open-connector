@@ -1,7 +1,12 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
 
-import { compactObject, optionalInteger, optionalRecord, optionalString } from "../../core/cast.ts";
-import { createProviderTimeout, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import { compactObject, optionalBoolean, optionalInteger, optionalRecord, optionalString } from "../../core/cast.ts";
+import {
+  createProviderTimeout,
+  isAbortLikeError,
+  ProviderRequestError,
+  providerUserAgent,
+} from "../provider-runtime.ts";
 
 const getresponseRetailApiBaseUrl = "https://api.getresponse.com/v3";
 export const getresponseMaxApiBaseUrls = [
@@ -9,7 +14,6 @@ export const getresponseMaxApiBaseUrls = [
   "https://api3.getresponse360.pl/v3",
 ] as const;
 
-const getresponseRequestTimeoutMs = 30_000;
 const getresponseCredentialHelpUrl = "https://app.getresponse.com/api";
 
 type GetresponseRequestPhase = "validate" | "execute";
@@ -105,12 +109,16 @@ export async function validateGetresponseCredential(
   };
 }
 
+export function resolveStoredGetresponseApiBaseUrl(providerMetadata: Record<string, unknown>): string {
+  return readStoredConnection(providerMetadata).apiBaseUrl;
+}
+
 function listCampaigns(input: GetresponseInput, fetcher: typeof fetch) {
   return requestList(input, fetcher, {
     path: "/campaigns",
     query: compactObject({
       "query[name]": optionalInputString(input.input.name),
-      "query[isDefault]": optionalInputBoolean(input.input.isDefault),
+      "query[isDefault]": optionalBoolean(input.input.isDefault),
       ...buildSortQuery(input.input),
       ...buildPageQuery(input.input),
     }),
@@ -325,7 +333,7 @@ async function requestGetresponseJson(input: {
   query?: Record<string, GetresponseQueryValue>;
   body?: Record<string, unknown>;
 }): Promise<GetresponseRequestResult> {
-  const timeout = createProviderTimeout(undefined, getresponseRequestTimeoutMs);
+  const timeout = createProviderTimeout(undefined);
   const url = buildGetresponseUrl(input.connection.apiBaseUrl, input.path, input.query);
   const method = input.method ?? "GET";
   const headers = new Headers({
@@ -680,8 +688,6 @@ function createGetresponseError(status: number, payload: unknown, phase: Getresp
     return new ProviderRequestError(
       phase === "validate" ? 400 : status,
       phase === "validate" ? `GetResponse credential validation failed: ${message}` : message,
-      undefined,
-      phase === "validate" ? "invalid_input" : "credential_expired",
     );
   }
   if (status === 429) return new ProviderRequestError(429, message, undefined, "rate_limited");
@@ -774,10 +780,6 @@ function optionalInputString(value: unknown) {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
-function optionalInputBoolean(value: unknown) {
-  return typeof value === "boolean" ? value : undefined;
-}
-
 function optionalInputInteger(value: unknown) {
   return optionalInteger(value);
 }
@@ -810,8 +812,4 @@ function optionalBooleanLike(value: unknown) {
   if (value === "true") return true;
   if (value === "false") return false;
   return null;
-}
-
-function isAbortLikeError(error: unknown) {
-  return error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError");
 }

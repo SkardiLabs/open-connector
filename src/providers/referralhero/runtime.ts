@@ -1,11 +1,16 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
-import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-executors.ts";
 
 import { optionalRecord, optionalString } from "../../core/cast.ts";
-import { createProviderTimeout, providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+import {
+  createProviderTimeout,
+  providerUserAgent,
+  ProviderRequestError,
+  providerInputError,
+  providerResponseError,
+} from "../provider-runtime.ts";
 export const referralheroApiBaseUrl = "https://app.referralhero.com/api/v2";
-const timeoutMs = 30_000;
 interface Spec {
   method: string;
   path: string;
@@ -117,7 +122,7 @@ async function request(spec: Spec, context: ApiKeyProviderContext, phase: "valid
   const url = new URL(`${referralheroApiBaseUrl}${spec.path}`);
   for (const [key, value] of Object.entries(spec.query ?? {}))
     if (value !== undefined) url.searchParams.set(key, String(value));
-  const timeout = createProviderTimeout(context.signal, timeoutMs);
+  const timeout = createProviderTimeout(context.signal);
   try {
     const response = await context.fetcher(url, {
       method: spec.method,
@@ -183,8 +188,8 @@ function mapError(status: number, payload: Record<string, unknown>, phase: "vali
   if (status === 429 || code === "too_many_calls") return new ProviderRequestError(429, message);
   if (["no_token", "invalid_token", "inactive_account"].includes(code ?? "") || status === 401 || status === 403)
     return new ProviderRequestError(phase === "validate" ? 400 : status, message);
-  if (status < 500 || payload.status === "error") return new ProviderRequestError(400, message);
-  return new ProviderRequestError(502, message);
+  if (status < 500 || payload.status === "error") return providerInputError(message);
+  return providerResponseError(message);
 }
 function requiredObject(value: unknown, name: string) {
   const result = optionalRecord(value);

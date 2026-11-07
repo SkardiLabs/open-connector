@@ -1,6 +1,6 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import {
   compactObject,
@@ -19,8 +19,6 @@ import {
 } from "../provider-runtime.ts";
 
 export const discolikeApiBaseUrl = "https://api.discolike.com/v1";
-
-const discolikeDefaultRequestTimeoutMs = 30_000;
 
 type DiscolikePhase = "validate" | "execute";
 type DiscolikeQueryValue = string | number | boolean | readonly string[] | undefined;
@@ -163,7 +161,7 @@ async function requestDiscolikeJson(input: {
   context: DiscolikeContext;
   phase: DiscolikePhase;
 }): Promise<unknown> {
-  const timeout = createProviderTimeout(input.context.signal, discolikeDefaultRequestTimeoutMs);
+  const timeout = createProviderTimeout(input.context.signal);
   try {
     const response = await input.context.fetcher(buildDiscolikeUrl(input.path, input.query), {
       method: "GET",

@@ -1,9 +1,14 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
-import type { ShortcutActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
 import { compactObject, optionalBoolean, optionalInteger, optionalRecord, optionalString } from "../../core/cast.ts";
-import { providerFetch, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import {
+  providerFetch,
+  ProviderRequestError,
+  providerUserAgent,
+  requiredResponseRecord,
+  providerInputError,
+} from "../provider-runtime.ts";
 
 export const shortcutApiBaseUrl = "https://api.app.shortcut.com/api/v3/";
 const shortcutValidatePath = "member";
@@ -69,7 +74,7 @@ export async function validateShortcutCredential(
   const apiKey = readRequiredApiKey(input.apiKey);
   const payload = await shortcutGetJson(shortcutValidatePath, apiKey, fetcher, "validate");
   const member = normalizeShortcutMember(payload);
-  const profile = requireRecord(member.profile, "member.profile");
+  const profile = requiredResponseRecord(member.profile, "member.profile");
 
   return {
     profile: {
@@ -91,21 +96,6 @@ export async function validateShortcutCredential(
       memberEmail: readOptionalString(profile.email_address),
     }),
   };
-}
-
-export async function executeShortcutAction(
-  input: {
-    actionName: ShortcutActionName;
-    input: Record<string, unknown>;
-    apiKey?: string;
-  },
-  fetcher: typeof fetch,
-): Promise<unknown> {
-  const apiKey = readRequiredApiKey(input.apiKey);
-  return shortcutActionHandlers[input.actionName](input.input, {
-    apiKey,
-    fetcher,
-  });
 }
 
 async function listMembers(input: Record<string, unknown>, context: { apiKey: string; fetcher: typeof fetch }) {
@@ -170,7 +160,7 @@ async function getProject(input: Record<string, unknown>, context: { apiKey: str
 async function listEpics(input: Record<string, unknown>, context: { apiKey: string; fetcher: typeof fetch }) {
   const payload = await shortcutGetJson(
     buildPathWithQuery("epics", {
-      includes_description: readOptionalBoolean(input.includesDescription),
+      includes_description: optionalBoolean(input.includesDescription),
     }),
     context.apiKey,
     context.fetcher,
@@ -220,7 +210,7 @@ async function listStories(input: Record<string, unknown>, context: { apiKey: st
   const projectId = readRequiredPositiveInteger(input.projectId, "projectId");
   const payload = await shortcutGetJson(
     buildPathWithQuery(`projects/${projectId}/stories`, {
-      includes_description: readOptionalBoolean(input.includesDescription),
+      includes_description: optionalBoolean(input.includesDescription),
     }),
     context.apiKey,
     context.fetcher,
@@ -280,7 +270,7 @@ async function searchStories(input: Record<string, unknown>, context: { apiKey: 
     "execute",
   );
 
-  const record = requireRecord(payload, "search stories response");
+  const record = requiredResponseRecord(payload, "search stories response");
   return {
     stories: readArray(record.data, "searchStories.data").map((item) => normalizeShortcutStory(item)),
     next: readOptionalString(record.next) ?? null,
@@ -301,7 +291,7 @@ function buildShortcutEpicBody(input: Record<string, unknown>) {
     planned_start_date: readOptionalString(input.plannedStartDate),
     deadline: readOptionalString(input.deadline),
     external_id: readOptionalNullableString(input.externalId),
-    archived: readOptionalBoolean(input.archived),
+    archived: optionalBoolean(input.archived),
   });
 }
 
@@ -320,7 +310,7 @@ function buildShortcutStoryBody(input: Record<string, unknown>) {
     due_date: readOptionalString(input.dueDate),
     external_id: readOptionalNullableString(input.externalId),
     iteration_id: readOptionalIntegerValue(input.iterationId),
-    archived: readOptionalBoolean(input.archived),
+    archived: optionalBoolean(input.archived),
   });
 }
 
@@ -430,7 +420,7 @@ function createShortcutError(status: number, payload: unknown, phase: ShortcutRe
   }
 
   if (phase === "validate" && [400, 401, 403, 404].includes(status)) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
 
   if (phase === "execute" && (status === 401 || status === 403)) {
@@ -438,7 +428,7 @@ function createShortcutError(status: number, payload: unknown, phase: ShortcutRe
   }
 
   if (phase === "execute" && [400, 404, 422].includes(status)) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
 
   return new ProviderRequestError(status >= 500 ? status : 502, message);
@@ -488,7 +478,7 @@ function buildPathWithQuery(path: string, query: Record<string, string | number 
 }
 
 function normalizeShortcutMember(value: unknown) {
-  const record = requireRecord(value, "member");
+  const record = requiredResponseRecord(value, "member");
   return compactObject({
     id: readRequiredString(record.id, "member.id"),
     role: readOptionalNullableString(record.role),
@@ -504,16 +494,16 @@ function normalizeShortcutMember(value: unknown) {
 }
 
 function normalizeShortcutMemberProfile(value: unknown) {
-  const record = requireRecord(value, "member.profile");
+  const record = requiredResponseRecord(value, "member.profile");
   return compactObject({
     id: readOptionalString(record.id),
     name: readOptionalString(record.name),
     mention_name: readOptionalNullableString(record.mention_name),
     email_address: readOptionalNullableString(record.email_address),
-    deactivated: readOptionalBoolean(record.deactivated),
-    two_factor_auth_activated: readOptionalBoolean(record.two_factor_auth_activated),
-    is_owner: readOptionalBoolean(record.is_owner),
-    disabled: readOptionalBoolean(record.disabled),
+    deactivated: optionalBoolean(record.deactivated),
+    two_factor_auth_activated: optionalBoolean(record.two_factor_auth_activated),
+    is_owner: optionalBoolean(record.is_owner),
+    disabled: optionalBoolean(record.disabled),
     entity_type: readOptionalString(record.entity_type),
     gravatar_hash: readOptionalNullableString(record.gravatar_hash),
     icon: normalizeOptionalShortcutIcon(record.icon),
@@ -524,7 +514,7 @@ function normalizeOptionalShortcutIcon(value: unknown) {
   if (value == null) {
     return null;
   }
-  const record = requireRecord(value, "icon");
+  const record = requiredResponseRecord(value, "icon");
   return compactObject({
     id: readOptionalIntegerValue(record.id),
     url: readOptionalString(record.url),
@@ -535,7 +525,7 @@ function normalizeOptionalShortcutIcon(value: unknown) {
 }
 
 function normalizeShortcutWorkflow(value: unknown) {
-  const record = requireRecord(value, "workflow");
+  const record = requiredResponseRecord(value, "workflow");
   return compactObject({
     id: readRequiredPositiveInteger(record.id, "workflow.id"),
     name: readRequiredString(record.name, "workflow.name"),
@@ -553,7 +543,7 @@ function normalizeShortcutWorkflow(value: unknown) {
 }
 
 function normalizeShortcutWorkflowState(value: unknown) {
-  const record = requireRecord(value, "workflow state");
+  const record = requiredResponseRecord(value, "workflow state");
   return compactObject({
     id: readRequiredPositiveInteger(record.id, "workflowState.id"),
     name: readRequiredString(record.name, "workflowState.name"),
@@ -572,7 +562,7 @@ function normalizeShortcutWorkflowState(value: unknown) {
 }
 
 function normalizeShortcutProject(value: unknown) {
-  const record = requireRecord(value, "project");
+  const record = requiredResponseRecord(value, "project");
   return compactObject({
     id: readRequiredPositiveInteger(record.id, "project.id"),
     name: readRequiredString(record.name, "project.name"),
@@ -597,7 +587,7 @@ function normalizeShortcutProject(value: unknown) {
 }
 
 function normalizeShortcutProjectStats(value: unknown) {
-  const record = requireRecord(value, "project.stats");
+  const record = requiredResponseRecord(value, "project.stats");
   return compactObject({
     num_points: readOptionalIntegerValue(record.num_points),
     num_stories: readOptionalIntegerValue(record.num_stories),
@@ -606,7 +596,7 @@ function normalizeShortcutProjectStats(value: unknown) {
 }
 
 function normalizeShortcutEpic(value: unknown) {
-  const record = requireRecord(value, "epic");
+  const record = requiredResponseRecord(value, "epic");
   return compactObject({
     id: readRequiredPositiveInteger(record.id, "epic.id"),
     name: readRequiredString(record.name, "epic.name"),
@@ -639,7 +629,7 @@ function normalizeShortcutEpic(value: unknown) {
 }
 
 function normalizeShortcutEpicStats(value: unknown) {
-  const record = requireRecord(value, "epic.stats");
+  const record = requiredResponseRecord(value, "epic.stats");
   return compactObject({
     num_points: readOptionalIntegerValue(record.num_points),
     num_points_done: readOptionalIntegerValue(record.num_points_done),
@@ -656,7 +646,7 @@ function normalizeShortcutEpicStats(value: unknown) {
 }
 
 function normalizeShortcutStory(value: unknown) {
-  const record = requireRecord(value, "story");
+  const record = requiredResponseRecord(value, "story");
   return compactObject({
     id: readRequiredPositiveInteger(record.id, "story.id"),
     name: readRequiredString(record.name, "story.name"),
@@ -692,7 +682,7 @@ function normalizeShortcutStory(value: unknown) {
 }
 
 function normalizeShortcutStoryTask(value: unknown) {
-  const record = requireRecord(value, "story task");
+  const record = requiredResponseRecord(value, "story task");
   return compactObject({
     id: readRequiredPositiveInteger(record.id, "storyTask.id"),
     description: readRequiredString(record.description, "storyTask.description"),
@@ -705,7 +695,7 @@ function normalizeShortcutStoryTask(value: unknown) {
 }
 
 function normalizeShortcutLabel(value: unknown) {
-  const record = requireRecord(value, "label");
+  const record = requiredResponseRecord(value, "label");
   return compactObject({
     id: readRequiredPositiveInteger(record.id, "label.id"),
     name: readRequiredString(record.name, "label.name"),
@@ -747,7 +737,7 @@ function readOptionalShortcutLabels(value: unknown) {
   }
 
   return value.map((item) => {
-    const record = requireRecord(item, "label");
+    const record = requiredResponseRecord(item, "label");
     return compactObject({
       name: readOptionalString(record.name),
       color: readOptionalString(record.color),
@@ -755,14 +745,6 @@ function readOptionalShortcutLabels(value: unknown) {
       external_id: readOptionalNullableString(record.externalId),
     });
   });
-}
-
-function requireRecord(value: unknown, fieldName: string) {
-  const record = optionalRecord(value);
-  if (!record) {
-    throw new ProviderRequestError(502, `${fieldName} must be an object`);
-  }
-  return record;
 }
 
 function readRequiredApiKey(apiKey: string | undefined) {
@@ -813,12 +795,8 @@ function readOptionalNullableInteger(value: unknown) {
   return value === null ? null : readOptionalIntegerValue(value);
 }
 
-function readOptionalBoolean(value: unknown) {
-  return optionalBoolean(value);
-}
-
 function readRequiredBoolean(value: unknown, fieldName: string) {
-  const booleanValue = readOptionalBoolean(value);
+  const booleanValue = optionalBoolean(value);
   if (booleanValue === undefined) {
     throw new ProviderRequestError(502, `${fieldName} must be a boolean`);
   }

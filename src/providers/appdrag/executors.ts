@@ -4,26 +4,30 @@ import type {
   ProviderProxyExecutor,
   ProxyExecutionResult,
 } from "../../core/types.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { compactObject, optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
 import {
-  createProviderFetch,
   createProviderProxyUrl,
-  defineApiKeyProviderExecutors,
   normalizeProviderProxyHeaders,
-  ProviderRequestError,
-  providerUserAgent,
   readProviderProxyErrorMessage,
   readProviderProxyResponse,
-  requireApiKeyCredential,
   toProviderProxyError,
+} from "../provider-proxy.ts";
+import {
+  createProviderFetch,
+  isAbortLikeError,
+  providerInputError,
+  ProviderRequestError,
+  providerUserAgent,
+  defaultProviderRequestTimeoutMs,
 } from "../provider-runtime.ts";
 
 const service = "appdrag";
 const appdragHomepageUrl = "https://appdrag.com";
-const appdragDefaultRequestTimeoutMs = 30_000;
 const appdragResponseWrapperDescription = "/api/<folder>/<function>";
 const appdragFetch = createProviderFetch({ skipDnsValidation: true });
 
@@ -102,8 +106,8 @@ export const credentialValidators: CredentialValidators = {
 };
 
 async function executeFunction(input: Record<string, unknown>, context: ApiKeyProviderContext): Promise<unknown> {
-  const folder = requiredString(input.folder, "folder", invalidInputError);
-  const functionName = requiredString(input.functionName, "functionName", invalidInputError);
+  const folder = requiredString(input.folder, "folder", providerInputError);
+  const functionName = requiredString(input.functionName, "functionName", providerInputError);
   const method = normalizeMethod(input.method);
   const environment = normalizeEnvironment(input.environment);
   const rawResponse = input.rawResponse === true;
@@ -251,7 +255,7 @@ async function requestAppdrag(
   init: RequestInit,
   context: Pick<ApiKeyProviderContext, "fetcher" | "signal">,
 ): Promise<AppdragResponse> {
-  const timeoutSignal = AbortSignal.timeout(appdragDefaultRequestTimeoutMs);
+  const timeoutSignal = AbortSignal.timeout(defaultProviderRequestTimeoutMs);
   const signal = context.signal ? AbortSignal.any([context.signal, timeoutSignal]) : timeoutSignal;
 
   try {
@@ -272,7 +276,7 @@ async function requestAppdrag(
     if (error instanceof ProviderRequestError) {
       throw error;
     }
-    if (timeoutSignal.aborted && isAbortError(error)) {
+    if (timeoutSignal.aborted && isAbortLikeError(error)) {
       throw new ProviderRequestError(504, "AppDrag request timed out");
     }
 
@@ -369,12 +373,4 @@ function inferResponseFormat(body: unknown): "empty" | "json" | "text" {
     return "text";
   }
   return "json";
-}
-
-function isAbortError(error: unknown): boolean {
-  return error instanceof Error && error.name === "AbortError";
-}
-
-function invalidInputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
 }

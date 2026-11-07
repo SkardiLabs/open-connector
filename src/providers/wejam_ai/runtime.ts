@@ -1,6 +1,7 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
-import type { ApiKeyProviderContext, ProviderFetch } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
+import type { ProviderFetch } from "../provider-runtime.ts";
 
 import { compactObject, objectArray, optionalRecord, optionalString } from "../../core/cast.ts";
 import { queryParams } from "../../core/request.ts";
@@ -9,6 +10,8 @@ import {
   isAbortLikeError,
   providerUserAgent,
   ProviderRequestError,
+  providerInputError,
+  providerResponseError,
 } from "../provider-runtime.ts";
 import { wejamAiExportResourceValues } from "./constants.ts";
 
@@ -16,7 +19,6 @@ export const wejamAiApiBaseUrl: string = "https://api.wejam.ai";
 export const wejamAiDataExportPathPrefix: string = "/api/v1/data-exports";
 export const wejamAiValidationPath: string = `${wejamAiDataExportPathPrefix}/users`;
 
-const wejamAiDefaultRequestTimeoutMs = 30_000;
 const wejamAiExportResourceSet = new Set<string>(wejamAiExportResourceValues);
 
 type WejamAiPhase = "validate" | "execute";
@@ -87,7 +89,7 @@ async function requestWejamAiJson(input: {
   signal?: AbortSignal;
   query?: URLSearchParams;
 }): Promise<unknown> {
-  const timeout = createProviderTimeout(input.signal, wejamAiDefaultRequestTimeoutMs);
+  const timeout = createProviderTimeout(input.signal);
 
   let response: Response;
   let payload: unknown;
@@ -174,7 +176,7 @@ function createWejamAiError(status: number, payload: unknown, phase: WejamAiPhas
   const message = extractWejamAiErrorMessage(payload) ?? `Jam request failed with status ${status}`;
 
   if (phase === "validate" && status === 401) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   if (phase === "execute" && status === 401) {
     return new ProviderRequestError(401, message);
@@ -219,7 +221,7 @@ function normalizeDataExportPayload(
 
   return {
     resource,
-    data: objectArray(body.data, "Jam data-export response data", (message) => new ProviderRequestError(502, message)),
+    data: objectArray(body.data, "Jam data-export response data", providerResponseError),
     meta: {
       total: readRequiredNumber(meta, "total"),
       page: readRequiredNumber(meta, "page"),

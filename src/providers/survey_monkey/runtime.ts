@@ -1,7 +1,13 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
 
 import { compactObject, optionalInteger, optionalRecord, optionalString, requiredRecord } from "../../core/cast.ts";
-import { createProviderTimeout, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import {
+  createProviderTimeout,
+  ProviderRequestError,
+  providerUserAgent,
+  providerInputError,
+  providerResponseError,
+} from "../provider-runtime.ts";
 
 interface AccountProfile {
   providerAccountId: string;
@@ -16,7 +22,6 @@ const surveyMonkeyApiBaseUrls = [
   "https://api.surveymonkey.ca",
 ] as const;
 
-const surveyMonkeyDefaultRequestTimeoutMs = 30_000;
 const surveyMonkeyValidationPath = "/v3/users/me";
 
 type SurveyMonkeyRequestPhase = "validate" | "execute" | "trigger";
@@ -287,7 +292,7 @@ export async function validateSurveyMonkeyCredential(
   };
 }
 
-function normalizeSurveyMonkeyApiBaseUrl(value: unknown) {
+export function normalizeSurveyMonkeyApiBaseUrl(value: unknown): string {
   if (typeof value !== "string" || !value.trim()) {
     throw new ProviderRequestError(400, "SurveyMonkey apiBaseUrl is required");
   }
@@ -325,7 +330,7 @@ async function requestSurveyMonkeyJson(input: {
     }
   }
 
-  const timeout = createProviderTimeout(undefined, surveyMonkeyDefaultRequestTimeoutMs);
+  const timeout = createProviderTimeout(undefined);
   try {
     const response = await input.fetcher(url, {
       method: input.method,
@@ -550,11 +555,11 @@ function mapSurveyMonkeyError(status: number, payload: unknown, phase: SurveyMon
   }
   if (status === 403) {
     if (phase === "validate") {
-      return new ProviderRequestError(400, message);
+      return providerInputError(message);
     }
     if (errorId === "1014") return new ProviderRequestError(403, message);
     if (errorId === "1017") return new ProviderRequestError(429, message);
-    if (errorId === "1018") return new ProviderRequestError(502, message);
+    if (errorId === "1018") return providerResponseError(message);
     return new ProviderRequestError(403, message);
   }
   if (status === 400 || status === 404 || status === 422) {

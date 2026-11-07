@@ -5,6 +5,7 @@ import { assertPublicHttpUrl, isPrivateNetworkAccessAllowed } from "../../core/r
 import {
   createProviderTimeout,
   isAbortLikeError,
+  providerInputError,
   providerUserAgent,
   ProviderRequestError,
 } from "../provider-runtime.ts";
@@ -159,7 +160,7 @@ async function request(
   path: string,
   options: TheHiveRequestOptions = {},
 ): Promise<unknown> {
-  const timeout = createProviderTimeout(context.signal, 30_000);
+  const timeout = createProviderTimeout(context.signal);
   const url = new URL(path, `${context.baseUrl}/`);
   try {
     const headers: Record<string, string> = {
@@ -219,7 +220,7 @@ function mapError(
     optionalString(object.error) ??
     `${displayName} request failed with status ${status}`;
   if (status == 401 || status == 403) return new ProviderRequestError(phase == "validate" ? 400 : status, message);
-  if (status == 404 && notFound) return new ProviderRequestError(400, message);
+  if (status == 404 && notFound) return providerInputError(message);
   if (status == 429) return new ProviderRequestError(429, message);
   return new ProviderRequestError(status >= 500 ? 502 : status, message, payload);
 }
@@ -228,8 +229,4 @@ function requireEntity(payload: unknown, displayName: string, kind: string): Rec
   const entity = optionalRecord(payload);
   if (!entity) throw new ProviderRequestError(502, `${displayName} response is missing the ${kind} object`, payload);
   return entity;
-}
-
-function providerInputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
 }

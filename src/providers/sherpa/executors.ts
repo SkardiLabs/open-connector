@@ -1,13 +1,10 @@
 import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { optionalRecord, optionalString } from "../../core/cast.ts";
-import {
-  createProviderTimeout,
-  defineApiKeyProviderExecutors,
-  defineProviderProxy,
-  ProviderRequestError,
-} from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { createProviderTimeout, ProviderRequestError } from "../provider-runtime.ts";
 
 const service = "sherpa";
 const apiBaseUrl = "https://requirements-api.joinsherpa.com";
@@ -116,7 +113,7 @@ async function request(
   fetcher: typeof fetch,
   signal?: AbortSignal,
 ): Promise<Record<string, unknown>> {
-  const timeout = createProviderTimeout(signal, 30_000);
+  const timeout = createProviderTimeout(signal);
   try {
     const response = await fetcher(`${apiBaseUrl}${path}`, {
       method: "POST",

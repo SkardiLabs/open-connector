@@ -30,6 +30,8 @@ export interface MailCredential {
    * Providers with a hardcoded host leave it unset and keep 465.
    */
   smtpPort?: number;
+  /** Use implicit TLS on a non-standard submission port. */
+  smtpSecure?: boolean;
 }
 
 export interface MailProtocolConfig {
@@ -522,6 +524,7 @@ async function createSmtpTransport(
 ): Promise<MailSmtpTransport> {
   const target = await pinMailHost(credential.smtpHost, "SMTP host", config, deps);
   const port = credential.smtpPort ?? mailSmtpPort;
+  const secure = credential.smtpSecure ?? port === mailSmtpPort;
   const transportConfig = {
     host: target.host,
     ...(target.servername ? { servername: target.servername } : {}),
@@ -533,8 +536,8 @@ async function createSmtpTransport(
     // password in the clear to a server that does not offer the upgrade. The
     // flag stays off for implicit TLS, where it would only make a server whose
     // EHLO fails unusable rather than falling back to HELO as before.
-    secure: port === mailSmtpPort,
-    requireTLS: port !== mailSmtpPort,
+    secure,
+    requireTLS: !secure,
     auth: {
       user: credential.email,
       pass: credential.authorizationCode,
@@ -808,16 +811,17 @@ function normalizeAddress(value: unknown): MailAddress {
   };
 }
 
-function collectBodyParts(bodyStructure: unknown): BodyPart[] {
+function collectBodyParts(bodyStructure: unknown, isRoot = true): BodyPart[] {
   const record = toRecord(bodyStructure);
   if (!record) {
     return [];
   }
 
   const childNodes = record.childNodes;
-  const childParts = Array.isArray(childNodes) ? childNodes.flatMap(collectBodyParts) : [];
+  const childParts = Array.isArray(childNodes) ? childNodes.flatMap((child) => collectBodyParts(child, false)) : [];
   const type = readString(record.type)?.toLowerCase();
-  const part = readString(record.part);
+  // IMAP addresses a single-part root as section 1; ImapFlow leaves its part unset.
+  const part = readString(record.part) ?? (isRoot ? "1" : null);
   if (!type || !part || !type.startsWith("text/") || isAttachment(record)) {
     return childParts;
   }

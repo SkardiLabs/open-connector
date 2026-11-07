@@ -1,25 +1,19 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
-import type { ApiKeyProviderContext, ProviderFetch, ProviderRuntimeHandler } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-executors.ts";
+import type { ProviderFetch } from "../provider-runtime.ts";
 
-import {
-  compactObject,
-  objectArray,
-  optionalRecord,
-  optionalString,
-  requiredRecord,
-  requiredString,
-} from "../../core/cast.ts";
+import { compactObject, objectArray, optionalRecord, optionalString, requiredRecord } from "../../core/cast.ts";
 import {
   createProviderTimeout,
   isAbortLikeError,
   ProviderRequestError,
   providerUserAgent,
+  requiredInputString,
 } from "../provider-runtime.ts";
 
 export const courierApiBaseUrl = "https://api.courier.com";
 
-const courierDefaultRequestTimeoutMs = 30_000;
 const courierValidationPath = "/lists";
 
 type CourierRequestPhase = "validate" | "execute";
@@ -61,7 +55,7 @@ export const courierActionHandlers: ProviderActionHandlers<"courier", CourierAct
     };
   },
   async get_profile(input, context) {
-    const userId = readRequiredTrimmedString(input.userId, "userId");
+    const userId = requiredInputString(input.userId, "userId");
     const response = await requestCourierJson({
       path: `/profiles/${encodeURIComponent(userId)}`,
       method: "GET",
@@ -78,7 +72,7 @@ export const courierActionHandlers: ProviderActionHandlers<"courier", CourierAct
     };
   },
   async merge_profile(input, context) {
-    const userId = readRequiredTrimmedString(input.userId, "userId");
+    const userId = requiredInputString(input.userId, "userId");
     const response = await requestCourierJson({
       path: `/profiles/${encodeURIComponent(userId)}`,
       method: "POST",
@@ -97,7 +91,7 @@ export const courierActionHandlers: ProviderActionHandlers<"courier", CourierAct
     };
   },
   async delete_profile(input, context) {
-    const userId = readRequiredTrimmedString(input.userId, "userId");
+    const userId = requiredInputString(input.userId, "userId");
     const response = await requestCourierJson({
       path: `/profiles/${encodeURIComponent(userId)}`,
       method: "DELETE",
@@ -131,7 +125,7 @@ export const courierActionHandlers: ProviderActionHandlers<"courier", CourierAct
     };
   },
   async get_list(input, context) {
-    const listId = readRequiredTrimmedString(input.listId, "listId");
+    const listId = requiredInputString(input.listId, "listId");
     const response = await requestCourierJson({
       path: `/lists/${encodeURIComponent(listId)}`,
       method: "GET",
@@ -146,7 +140,7 @@ export const courierActionHandlers: ProviderActionHandlers<"courier", CourierAct
     };
   },
   async upsert_list(input, context) {
-    const listId = readRequiredTrimmedString(input.listId, "listId");
+    const listId = requiredInputString(input.listId, "listId");
     const preferences = optionalRecord(input.preferences);
     const response = await requestCourierJson({
       path: `/lists/${encodeURIComponent(listId)}`,
@@ -154,7 +148,7 @@ export const courierActionHandlers: ProviderActionHandlers<"courier", CourierAct
       context,
       phase: "execute",
       body: compactObject({
-        name: readRequiredTrimmedString(input.name, "name"),
+        name: requiredInputString(input.name, "name"),
         preferences,
       }),
     });
@@ -166,7 +160,7 @@ export const courierActionHandlers: ProviderActionHandlers<"courier", CourierAct
     };
   },
   async delete_list(input, context) {
-    const listId = readRequiredTrimmedString(input.listId, "listId");
+    const listId = requiredInputString(input.listId, "listId");
     const response = await requestCourierJson({
       path: `/lists/${encodeURIComponent(listId)}`,
       method: "DELETE",
@@ -181,7 +175,7 @@ export const courierActionHandlers: ProviderActionHandlers<"courier", CourierAct
     };
   },
   async list_list_subscriptions(input, context) {
-    const listId = readRequiredTrimmedString(input.listId, "listId");
+    const listId = requiredInputString(input.listId, "listId");
     const response = await requestCourierJson({
       path: `/lists/${encodeURIComponent(listId)}/subscriptions`,
       method: "GET",
@@ -201,7 +195,7 @@ export const courierActionHandlers: ProviderActionHandlers<"courier", CourierAct
     };
   },
   async add_list_subscribers(input, context) {
-    const listId = readRequiredTrimmedString(input.listId, "listId");
+    const listId = requiredInputString(input.listId, "listId");
     const response = await requestCourierJson({
       path: `/lists/${encodeURIComponent(listId)}/subscriptions`,
       method: "POST",
@@ -219,8 +213,8 @@ export const courierActionHandlers: ProviderActionHandlers<"courier", CourierAct
     };
   },
   async unsubscribe_list_subscriber(input, context) {
-    const listId = readRequiredTrimmedString(input.listId, "listId");
-    const userId = readRequiredTrimmedString(input.userId, "userId");
+    const listId = requiredInputString(input.listId, "listId");
+    const userId = requiredInputString(input.userId, "userId");
     const response = await requestCourierJson({
       path: `/lists/${encodeURIComponent(listId)}/subscriptions/${encodeURIComponent(userId)}`,
       method: "DELETE",
@@ -268,7 +262,7 @@ export async function validateCourierCredential(
 }
 
 async function requestCourierJson(input: CourierRequestInput): Promise<CourierResponse> {
-  const timeout = createProviderTimeout(input.context.signal, courierDefaultRequestTimeoutMs);
+  const timeout = createProviderTimeout(input.context.signal);
 
   try {
     const headers: Record<string, string> = {
@@ -426,14 +420,10 @@ function normalizeListSubscriptions(value: unknown): Array<Record<string, unknow
 function normalizeSubscriberInput(value: unknown): Array<Record<string, unknown>> {
   return objectArray(value, "recipients").map((recipient) =>
     compactObject({
-      recipientId: readRequiredTrimmedString(recipient.recipientId, "recipientId"),
+      recipientId: requiredInputString(recipient.recipientId, "recipientId"),
       preferences: optionalRecord(recipient.preferences),
     }),
   );
-}
-
-function readRequiredTrimmedString(value: unknown, fieldName: string): string {
-  return requiredString(value, fieldName, (message) => new ProviderRequestError(400, message));
 }
 
 function readOptionalTrimmedString(value: unknown): string | undefined {

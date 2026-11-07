@@ -1,6 +1,6 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
-import type { ProviderRuntimeHandler } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ProviderRuntimeHandler } from "../provider-executors.ts";
 
 import { Buffer } from "node:buffer";
 import { optionalBoolean, optionalInteger, optionalRecord, optionalString } from "../../core/cast.ts";
@@ -12,7 +12,6 @@ import {
 } from "../provider-runtime.ts";
 
 export const referralRockApiBaseUrl = "https://api.referralrock.com";
-const timeoutMs = 30_000;
 interface Context {
   publicKey: string;
   privateKey: string;
@@ -68,7 +67,7 @@ export async function validateReferralRockCredential(context: Context): Promise<
 async function request(path: string, query: Record<string, string>, context: Context, phase: "validate" | "execute") {
   const url = new URL(path, referralRockApiBaseUrl);
   for (const [key, value] of Object.entries(query)) url.searchParams.set(key, value);
-  const timeout = createProviderTimeout(context.signal, timeoutMs);
+  const timeout = createProviderTimeout(context.signal);
   try {
     const response = await context.fetcher(url, {
       headers: {

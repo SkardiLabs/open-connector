@@ -1,5 +1,6 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ApiKeyProviderContext, ProviderActionHandlers, ProviderFetch } from "../provider-runtime.ts";
+import type { ApiKeyProviderContext, ProviderActionHandlers } from "../provider-executors.ts";
+import type { ProviderFetch } from "../provider-runtime.ts";
 import type { TikHubEndpointMethod } from "./endpoint-policy.ts";
 
 import {
@@ -8,7 +9,7 @@ import {
   optionalString as asOptionalString,
   requiredString,
 } from "../../core/cast.ts";
-import { createProviderTimeout, providerUserAgent } from "../provider-runtime.ts";
+import { createProviderTimeout, isAbortLikeError, providerUserAgent } from "../provider-runtime.ts";
 import { BoundedResponseTooLargeError, readBoundedResponseText } from "./bounded-response.ts";
 import { discoverTikHubEndpoints } from "./endpoint-catalog.ts";
 import {
@@ -18,7 +19,7 @@ import {
 } from "./endpoint-policy.ts";
 import { TikHubRequestError } from "./errors.ts";
 
-const tikhubApiBaseUrl = "https://api.tikhub.io";
+export const tikhubApiBaseUrl = "https://api.tikhub.io";
 const tikhubUserScope = "/api/v1/tikhub/user/";
 const tikhubUserRequestTimeoutMs = 45_000;
 const tikhubDynamicRequestTimeoutMs = 60_000;
@@ -213,7 +214,7 @@ async function invokeTikHubEndpoint(input: Record<string, unknown>, fetcher: typ
         "user-agent": providerUserAgent,
       },
       ...(serializedBody === undefined ? {} : { body: serializedBody }),
-      redirect: "error",
+      redirect: "manual",
       signal: timeout.signal,
     });
     let responseBody: unknown;
@@ -240,7 +241,6 @@ async function invokeTikHubEndpoint(input: Record<string, unknown>, fetcher: typ
         "provider_error",
         "TikHub returned an invalid business code",
         502,
-        undefined,
         compactObject({
           upstreamStatus: response.status,
           businessCode: rawBusinessCode,
@@ -539,33 +539,26 @@ function createDynamicTikHubError(input: {
   });
 
   if (status === 401) {
-    return new TikHubRequestError("credential_expired", "TikHub rejected the API credential", 401, undefined, data);
+    return new TikHubRequestError("authorization_failed", "TikHub rejected the API credential", 401, data);
   }
   if (status === 402) {
-    return new TikHubRequestError(
-      "provider_error",
-      "TikHub payment is required for this endpoint request",
-      402,
-      undefined,
-      data,
-    );
+    return new TikHubRequestError("provider_error", "TikHub payment is required for this endpoint request", 402, data);
   }
   if (status === 403) {
     return new TikHubRequestError(
-      "scope_missing",
+      "authorization_failed",
       `TikHub rejected the endpoint scope. The API token likely needs the ${input.requiredScope} path scope.`,
       403,
-      undefined,
       data,
     );
   }
   if (status === 429) {
-    return new TikHubRequestError("rate_limited", "TikHub rate limit exceeded", 429, undefined, data);
+    return new TikHubRequestError("rate_limited", "TikHub rate limit exceeded", 429, data);
   }
   if (status >= 400 && status < 500) {
-    return new TikHubRequestError("invalid_input", "TikHub rejected the endpoint request", status, undefined, data);
+    return new TikHubRequestError("invalid_input", "TikHub rejected the endpoint request", status, data);
   }
-  return new TikHubRequestError("provider_error", "TikHub endpoint request failed", status, undefined, data);
+  return new TikHubRequestError("provider_error", "TikHub endpoint request failed", status, data);
 }
 
 async function requestTikHubUserJson(input: {
@@ -588,7 +581,7 @@ async function requestTikHubUserJson(input: {
         authorization: `Bearer ${input.apiKey}`,
         "user-agent": providerUserAgent,
       },
-      redirect: "error",
+      redirect: "manual",
       signal: timeout.signal,
     });
     const payload = await readTikHubResponseBody(response, tikhubDynamicResponseMaxBytes);
@@ -640,34 +633,32 @@ function createUserTikHubError(status: number, payload: unknown, phase: TikHubPh
   const message = extractTikHubErrorMessage(payload) ?? `TikHub request failed with status ${status}`;
   if (status === 401) {
     return phase === "validate"
-      ? new TikHubRequestError("invalid_input", message, 400, undefined, payload)
-      : new TikHubRequestError("credential_expired", message, 401, undefined, payload);
+      ? new TikHubRequestError("invalid_input", message, 400, payload)
+      : new TikHubRequestError("authorization_failed", message, 401, payload);
   }
   if (status === 402) {
-    return new TikHubRequestError("provider_error", `TikHub payment required: ${message}`, 402, undefined, payload);
+    return new TikHubRequestError("provider_error", `TikHub payment required: ${message}`, 402, payload);
   }
   if (status === 403) {
     return new TikHubRequestError(
-      "scope_missing",
+      "authorization_failed",
       `${message}. The TikHub API token likely needs the ${requiredScopeForPath(path)} path scope.`,
       403,
-      undefined,
       payload,
     );
   }
   if (status === 429) {
-    return new TikHubRequestError("rate_limited", message, 429, undefined, payload);
+    return new TikHubRequestError("rate_limited", message, 429, payload);
   }
   if (status === 422 || (status >= 400 && status < 500)) {
     return new TikHubRequestError(
       phase === "validate" ? "invalid_input" : "invalid_input",
       message,
       phase === "validate" ? 400 : status,
-      undefined,
       payload,
     );
   }
-  return new TikHubRequestError("provider_error", message, status || 500, undefined, payload);
+  return new TikHubRequestError("provider_error", message, status || 500, payload);
 }
 
 function extractTikHubErrorMessage(payload: unknown) {
@@ -781,11 +772,4 @@ function asRecordOrEmpty(value: unknown, fieldName: string) {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isAbortLikeError(error: unknown) {
-  return (
-    error instanceof DOMException ||
-    (error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError"))
-  );
 }

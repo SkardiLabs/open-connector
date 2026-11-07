@@ -1,10 +1,16 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { optionalBoolean, optionalInteger, optionalNumber, optionalRecord, optionalString } from "../../core/cast.ts";
-import { createProviderTimeout, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import {
+  createProviderTimeout,
+  ProviderRequestError,
+  providerUserAgent,
+  requiredResponseRecord,
+  providerInputError,
+} from "../provider-runtime.ts";
 
-const screenshotbaseApiBaseUrl = "https://api.screenshotbase.com";
+export const screenshotbaseApiBaseUrl = "https://api.screenshotbase.com";
 
 const screenshotbaseStatusPath = "/v1/status";
 const screenshotbaseTakePath = "/v1/take";
@@ -74,7 +80,7 @@ async function getQuotaStatus(context: ApiKeyProviderContext, phase: Screenshotb
     fetcher: context.fetcher,
     phase,
   });
-  const quotas = requireObject(payload.quotas, "quotas");
+  const quotas = requiredResponseRecord(payload.quotas, "quotas");
 
   return {
     accountId: readNullableInteger(payload.account_id),
@@ -123,7 +129,7 @@ async function requestScreenshotbaseJson(input: ScreenshotbaseRequestInput) {
     if (!response.ok) {
       throw createScreenshotbaseError(response.status, payload, input.phase);
     }
-    return requireObject(payload, "response");
+    return requiredResponseRecord(payload, "response");
   } catch (error) {
     if (error instanceof ProviderRequestError) {
       throw error;
@@ -175,13 +181,13 @@ function createScreenshotbaseError(status: number, payload: unknown, phase: Scre
     return new ProviderRequestError(429, message);
   }
   if (phase === "validate" && (status === 401 || status === 403)) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   if (phase === "execute" && (status === 401 || status === 403)) {
-    return new ProviderRequestError(409, message);
+    return new ProviderRequestError(401, message);
   }
   if (status === 400 || status === 422) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   if (status === 408) {
     return new ProviderRequestError(504, message);
@@ -190,20 +196,12 @@ function createScreenshotbaseError(status: number, payload: unknown, phase: Scre
 }
 
 function normalizeQuotaBucket(value: unknown, fieldName: string) {
-  const bucket = requireObject(value, fieldName);
+  const bucket = requiredResponseRecord(value, fieldName);
   return {
     total: requireInteger(bucket.total, `${fieldName}.total`),
     used: requireInteger(bucket.used, `${fieldName}.used`),
     remaining: requireInteger(bucket.remaining, `${fieldName}.remaining`),
   };
-}
-
-function requireObject(value: unknown, fieldName: string) {
-  const object = optionalRecord(value);
-  if (!object) {
-    throw new ProviderRequestError(502, `${fieldName} must be an object`);
-  }
-  return object;
 }
 
 function requireInteger(value: unknown, fieldName: string) {

@@ -5,8 +5,10 @@ import { assertPublicHttpUrl, isPrivateNetworkAccessAllowed } from "../../core/r
 import {
   createProviderTimeout,
   isAbortLikeError,
+  providerInputError,
   providerUserAgent,
   ProviderRequestError,
+  providerResponseError,
 } from "../provider-runtime.ts";
 
 interface TaigaCredential {
@@ -47,8 +49,6 @@ interface TaigaListResult {
 }
 
 type TaigaActionHandler = (input: Record<string, unknown>, context: TaigaContext) => Promise<unknown>;
-
-const requestTimeoutMs = 30_000;
 
 export const taigaActionHandlers: Record<string, TaigaActionHandler> = {
   list_projects: actionHandler("list_projects"),
@@ -209,7 +209,7 @@ async function requestWithoutToken(input: TaigaRequestInput, authToken?: string)
     "user-agent": providerUserAgent,
   });
   if (authToken) headers.set("authorization", `Bearer ${authToken}`);
-  const timeout = createProviderTimeout(input.signal, requestTimeoutMs);
+  const timeout = createProviderTimeout(input.signal);
   try {
     const response = await input.fetcher(url, {
       method: input.method,
@@ -314,15 +314,11 @@ function requireObject(value: unknown, label: string): Record<string, unknown> {
 
 function createTaigaError(response: Response, phase: TaigaRequestInput["phase"]): ProviderRequestError {
   const message = `Taiga request failed with status ${response.status}`;
-  if (response.status == 400) return new ProviderRequestError(400, message);
+  if (response.status == 400) return providerInputError(message);
   if (response.status == 401 || response.status == 403) {
     return new ProviderRequestError(phase == "validate" ? 400 : response.status, message);
   }
-  if (response.status == 404) return new ProviderRequestError(400, message);
+  if (response.status == 404) return providerInputError(message);
   if (response.status == 409 || response.status == 429) return new ProviderRequestError(response.status, message);
-  return new ProviderRequestError(502, message);
-}
-
-function providerInputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
+  return providerResponseError(message);
 }

@@ -1,13 +1,11 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
 import { Buffer } from "node:buffer";
 import { compactObject, optionalInteger, optionalRecord, optionalString } from "../../core/cast.ts";
 import { createProviderTimeout, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
 
 export const imagekitApiBaseUrl = "https://api.imagekit.io";
-
-const imagekitRequestTimeoutMs = 30_000;
 
 type ImagekitRequestPhase = "validate" | "execute";
 
@@ -227,7 +225,7 @@ async function imagekitGetJson(input: Omit<ImagekitRequestInput, "method" | "bod
 }
 
 async function imagekitRequest(input: ImagekitRequestInput): Promise<unknown> {
-  const timeout = createProviderTimeout(input.signal, imagekitRequestTimeoutMs);
+  const timeout = createProviderTimeout(input.signal);
   let response: Response;
   try {
     response = await input.fetcher(buildImagekitUrl(input.path, input.query), {

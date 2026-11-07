@@ -1,12 +1,12 @@
 import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { optionalRecord, optionalString } from "../../core/cast.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
 import {
   createProviderTimeout,
-  defineApiKeyProviderExecutors,
-  defineProviderProxy,
   providerUserAgent,
   ProviderRequestError,
   readProviderJsonBody,
@@ -15,7 +15,6 @@ import {
 const service = "token_metrics";
 const tokenMetricsApiBaseUrl = "https://api.tokenmetrics.com/v2";
 const tokenMetricsValidationPath = "/tokens";
-const tokenMetricsRequestTimeoutMs = 30_000;
 
 type TokenMetricsPhase = "validate" | "execute";
 type TokenMetricsQueryValue = string | number | undefined;
@@ -119,7 +118,7 @@ async function tokenMetricsGet(
     }
   }
 
-  const timeout = createProviderTimeout(context.signal, tokenMetricsRequestTimeoutMs);
+  const timeout = createProviderTimeout(context.signal);
   try {
     const response = await context.fetcher(url, {
       method: "GET",

@@ -5,21 +5,30 @@ import type {
   ProviderProxyExecutor,
   ResolvedCredential,
 } from "../../core/types.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
+import type { IntegrationDefinition } from "../../triggers/common/integration.ts";
+import type { PollDefinition } from "../../triggers/common/poll.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
-import { compactObject } from "../../core/cast.ts";
+import { compactObject, optionalNumber, optionalString } from "../../core/cast.ts";
+import { encodePathSegment } from "../../core/request.ts";
+import { requireBearerCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
 import {
-  createProviderFetch,
   createProviderProxyUrl,
-  defineProviderExecutors,
   normalizeProviderProxyHeaders,
-  ProviderRequestError,
-  providerUserAgent,
   readProviderProxyErrorMessage,
   readProviderProxyResponse,
-  requireBearerCredential,
   toProviderProxyError,
+} from "../provider-proxy.ts";
+import {
+  createProviderFetch,
+  providerInputError,
+  ProviderRequestError,
+  providerUserAgent,
+  requiredInputString,
+  withRetryAfterSeconds,
 } from "../provider-runtime.ts";
+import { notionDatabasePageEvent } from "./trigger-on-database-page-event.ts";
 
 const service = "notion";
 const notionApiBaseUrl = "https://api.notion.com/v1";
@@ -41,9 +50,10 @@ interface NotionActionContext {
   /**
    * The stored credential's runtime metadata. For an OAuth credential this is
    * the token-exchange response minus its secrets — `workspace_id`, `owner`,
-   * `bot_id`, `workspace_name` — which is where Notion states who authorized
-   * a grant and in which workspace. No endpoint answers that afterwards, so
-   * `get_current_user` reads it here.
+   * `bot_id`, `workspace_name` — merged with the `/users/me` bot object the
+   * validator stored, whose `bot` carries `workspace_id`, `owner` and
+   * `workspace_name` as well. For an internal integration only the latter
+   * exists. `get_current_user` reads both here and makes no request.
    */
   metadata: Record<string, unknown>;
 }
@@ -129,6 +139,56 @@ export const notionActionHandlers: ProviderActionHandlers<"notion", NotionAction
   list_data_source_templates(input, context): Promise<unknown> {
     return notionListDataSourceTemplates(input, context.accessToken, context.fetcher);
   },
+  list_comments(input, context): Promise<unknown> {
+    return notionListComments(input, context.accessToken, context.fetcher);
+  },
+  list_views(input, context): Promise<unknown> {
+    const databaseId = optionalString(input.databaseId);
+    const dataSourceId = optionalString(input.dataSourceId);
+    if (!databaseId && !dataSourceId) {
+      throw providerInputError("databaseId or dataSourceId is required");
+    }
+    return notionRequest<NotionObject>(
+      context.accessToken,
+      {
+        path: "/views",
+        query: {
+          database_id: databaseId,
+          data_source_id: dataSourceId,
+          page_size: optionalNumber(input.pageSize),
+          start_cursor: optionalString(input.startCursor),
+        },
+      },
+      context.fetcher,
+    );
+  },
+  retrieve_view(input, context): Promise<unknown> {
+    return notionRequest<NotionObject>(
+      context.accessToken,
+      { path: `/views/${encodePathSegment(requiredInputString(input.viewId, "viewId"))}` },
+      context.fetcher,
+    );
+  },
+  update_view(input, context): Promise<unknown> {
+    return notionRequest<NotionObject>(
+      context.accessToken,
+      {
+        method: "PATCH",
+        path: `/views/${encodePathSegment(requiredInputString(input.viewId, "viewId"))}`,
+        body: {
+          name: input.name,
+          filter: input.filter,
+          sorts: input.sorts,
+          quick_filters: input.quick_filters,
+          configuration: input.configuration,
+        },
+      },
+      context.fetcher,
+    );
+  },
+  create_comment(input, context): Promise<unknown> {
+    return notionCreateComment(input, context.accessToken, context.fetcher);
+  },
 };
 
 export const executors: ProviderExecutors = defineProviderExecutors<NotionActionContext>({
@@ -171,7 +231,11 @@ export const proxy: ProviderProxyExecutor = async (input, context) => {
     const response = await notionFetch(url, init);
     if (!response.ok) {
       const text = await readProviderProxyErrorMessage(response, "");
-      throw new ProviderRequestError(response.status, text || `Notion request failed with HTTP ${response.status}`);
+      throw new ProviderRequestError(
+        response.status,
+        text || `Notion request failed with HTTP ${response.status}`,
+        withRetryAfterSeconds(response),
+      );
     }
 
     return { ok: true, response: await readProviderProxyResponse(response) };
@@ -223,12 +287,14 @@ function bearerTokenOf(credential: ResolvedCredential | undefined): string {
 }
 
 /**
- * The person named on the OAuth grant, or `undefined` for a grant that names
- * none (an internal-integration secret; a grant whose `owner.type` is
- * `workspace`).
+ * The person named as the credential's owner, or `undefined` when none is
+ * (a grant whose `owner.type` is `workspace`, which is every internal
+ * integration). Notion states the owner twice: at the top level of the token
+ * exchange, and under `bot.owner` of the `/users/me` bot object the validator
+ * stored. The exchange is read first, the bot object when it is absent.
  */
 function grantOwner(metadata: Record<string, unknown>): { id: string; name: string | undefined } | undefined {
-  const owner = asObject(metadata.owner);
+  const owner = asObject(metadata.owner) ?? asObject(asObject(metadata.bot)?.owner);
   if (owner?.type !== "user") {
     return undefined;
   }
@@ -238,28 +304,34 @@ function grantOwner(metadata: Record<string, unknown>): { id: string; name: stri
 }
 
 /**
- * `get_current_user`: the workspace and owner of the grant, and nothing else.
+ * `get_current_user`: the workspace and owner of the credential, and nothing
+ * else, read from what is already stored with it.
  *
- * Refuses rather than guesses when the grant names no workspace. That is the
- * internal-integration case, and it is a real limit rather than a missing
- * field: Notion exposes a workspace id ONLY in the OAuth token exchange, so
- * a pasted secret can never answer this and a consumer that keys on the
- * workspace id cannot be built on one.
+ * The workspace id has two sources and neither costs a request: the OAuth
+ * token exchange names it as `workspace_id`, and the `/users/me` bot object
+ * the validator stored names it as `bot.workspace_id` for OAuth grants and
+ * internal integrations alike. Refuses rather than guesses when neither is
+ * present, which means the credential was stored without its bot object and
+ * needs to be validated again.
  */
 function notionGetCurrentUser(metadata: Record<string, unknown>) {
-  const workspaceId = asNonEmptyString(metadata.workspace_id);
+  const bot = asObject(metadata.bot);
+  const workspaceId = asNonEmptyString(metadata.workspace_id) ?? asNonEmptyString(bot?.workspace_id);
   if (!workspaceId) {
+    // No explicit code: `providerErrorCodes` is the vocabulary a provider may
+    // put on the wire, and a missing credential field is not in it. The
+    // convention this follows is `provider-runtime.ts`'s own
+    // "credential metadata is missing …" — a plain 400 — with a message that
+    // says which field and what to do instead of only naming it.
     throw new ProviderRequestError(
       400,
-      "the stored Notion credential names no workspace_id — only an OAuth grant carries one; reconnect Notion with an OAuth app",
-      undefined,
-      "invalid_credential_metadata",
+      "the stored Notion credential carries no workspace_id; reconnect Notion so its bot object is stored with the credential",
     );
   }
   const owner = grantOwner(metadata);
   return {
     workspaceId,
-    workspaceName: asNonEmptyString(metadata.workspace_name) ?? null,
+    workspaceName: asNonEmptyString(metadata.workspace_name) ?? asNonEmptyString(bot?.workspace_name) ?? null,
     userId: owner?.id ?? null,
     userName: owner?.name ?? null,
     isBot: owner === undefined,
@@ -365,13 +437,19 @@ async function notionLastEditedTime(id: string, accessToken: string, fetcher: ty
       throw error;
     }
 
+    // A successful answer settles which kind of id this is. Only a 404 falls
+    // through, so an object Notion returned without a revision is malformed
+    // rather than a reason to consult the other endpoint.
     const lastEditedTime = asNonEmptyString(object.last_edited_time);
-    if (lastEditedTime) {
-      return lastEditedTime;
+    if (!lastEditedTime) {
+      throw new ProviderRequestError(502, `Notion returned ${id} without a last_edited_time`);
     }
+    return lastEditedTime;
   }
 
-  throw new ProviderRequestError(502, `Notion returned ${id} without a last_edited_time`);
+  // Unreachable: the block attempt either returns, rethrows its own 404, or
+  // throws the 502 above. Kept so the bounded loop has an explicit tail.
+  throw new ProviderRequestError(502, `Notion answered neither /pages nor /blocks for ${id}`);
 }
 
 /**
@@ -781,7 +859,7 @@ async function notionQueryDataSource(input: Record<string, unknown>, accessToken
         sorts: Array.isArray(input.sorts) ? input.sorts : undefined,
         page_size: asNumber(input.pageSize),
         start_cursor: asNonEmptyString(input.startCursor),
-        in_trash: typeof input.in_trash === "boolean" ? input.in_trash : undefined,
+        is_archived: typeof input.is_archived === "boolean" ? input.is_archived : undefined,
         result_type: asNonEmptyString(input.result_type),
       }),
     },
@@ -803,6 +881,49 @@ async function notionListDataSourceTemplates(
       query: compactQuery({
         page_size: asNumber(input.pageSize),
         start_cursor: asNonEmptyString(input.startCursor),
+      }),
+    },
+    fetcher,
+  );
+
+  return payload ?? {};
+}
+
+async function notionListComments(input: Record<string, unknown>, accessToken: string, fetcher: typeof fetch) {
+  const payload = await notionRequest<NotionObject>(
+    accessToken,
+    {
+      path: "/comments",
+      query: compactQuery({
+        block_id: String(input.blockId),
+        page_size: asNumber(input.pageSize),
+        start_cursor: asNonEmptyString(input.startCursor),
+      }),
+    },
+    fetcher,
+  );
+
+  return payload ?? {};
+}
+
+async function notionCreateComment(input: Record<string, unknown>, accessToken: string, fetcher: typeof fetch) {
+  const parent = asObject(input.parent);
+  const discussionId = asNonEmptyString(input.discussion_id);
+  if (!parent === !discussionId) {
+    throw providerInputError("exactly one of parent or discussion_id is required");
+  }
+
+  const payload = await notionRequest<NotionObject>(
+    accessToken,
+    {
+      method: "POST",
+      path: "/comments",
+      body: compactObject({
+        parent,
+        discussion_id: discussionId,
+        rich_text: Array.isArray(input.rich_text) ? input.rich_text : [],
+        attachments: Array.isArray(input.attachments) ? input.attachments : undefined,
+        display_name: asObject(input.display_name),
       }),
     },
     fetcher,
@@ -880,7 +1001,7 @@ async function assertNotionResponse(response: Response) {
     throw new ProviderRequestError(403, message);
   }
   if (response.status === 429) {
-    throw new ProviderRequestError(429, message);
+    throw new ProviderRequestError(429, message, withRetryAfterSeconds(response));
   }
 
   throw new ProviderRequestError(response.status, message);
@@ -1017,3 +1138,5 @@ function asNumber(value: unknown) {
 function asNonEmptyString(value: unknown) {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
+
+export const triggers: readonly (IntegrationDefinition | PollDefinition)[] = [notionDatabasePageEvent];

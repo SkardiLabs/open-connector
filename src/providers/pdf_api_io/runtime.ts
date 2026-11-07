@@ -1,17 +1,14 @@
 import type { CredentialValidationResult, ProviderExecutors } from "../../core/types.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { createHash } from "node:crypto";
 import { compactObject, optionalRecord, optionalString, requiredRecord, requiredString } from "../../core/cast.ts";
-import {
-  defineApiKeyProviderExecutors,
-  ProviderRequestError,
-  providerUserAgent,
-  uploadProviderUrlToTransitFile,
-} from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { uploadProviderUrlToTransitFile } from "../provider-files.ts";
+import { providerInputError, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
 
-const pdfApiIoApiBaseUrl = "https://pdf-api.io";
+export const pdfApiIoApiBaseUrl = "https://pdf-api.io";
 const pdfApiIoTemplatesPath = "/api/templates";
 
 type PdfApiIoRequestPhase = "validate" | "execute";
@@ -266,10 +263,6 @@ function readPdfApiIoObject(value: unknown): Record<string, unknown> {
 
 function buildPdfApiIoProviderAccountId(apiKey: string): string {
   return `pdf_api_io:${createHash("sha256").update(apiKey).digest("hex").slice(0, 16)}`;
-}
-
-function providerInputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
 }
 
 function providerOutputError(message: string): ProviderRequestError {

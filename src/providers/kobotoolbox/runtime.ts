@@ -21,11 +21,6 @@ interface ApiKeyProviderActionInput {
   providerMetadata: Record<string, unknown>;
   signal?: AbortSignal;
 }
-interface ProviderProxyFetchInput {
-  fetcher: typeof fetch;
-  url: URL;
-  init?: RequestInit;
-}
 interface ValidateCredentialResult {
   providerAccountId?: string;
   accountLabel: string;
@@ -269,14 +264,6 @@ export function normalizeKoboToolboxBaseUrl(
   return url.toString().replace(/\/$/, "");
 }
 
-export function resolveKoboToolboxBaseUrl(context: { providerMetadata: Record<string, unknown> }): string {
-  return storedBaseUrl(context.providerMetadata);
-}
-
-export async function fetchKoboToolboxProxy(input: ProviderProxyFetchInput): Promise<Response> {
-  return input.fetcher(input.url, input.init);
-}
-
 export async function requestKoboToolboxJson(input: {
   baseUrl: string;
   apiKey: string;
@@ -289,7 +276,7 @@ export async function requestKoboToolboxJson(input: {
   notFound?: boolean;
   signal?: AbortSignal;
 }): Promise<unknown> {
-  const timeout = createProviderTimeout(input.signal, 30_000);
+  const timeout = createProviderTimeout(input.signal);
   const url = new URL(input.path, `${normalizeKoboToolboxBaseUrl(input.baseUrl)}/`);
   for (const [key, value] of Object.entries(input.query ?? {})) {
     if (value !== undefined) url.searchParams.set(key, String(value));

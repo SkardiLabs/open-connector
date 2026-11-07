@@ -1,11 +1,11 @@
 import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
 import { compactObject, optionalBoolean, optionalNumber, optionalRecord, optionalString } from "../../core/cast.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
 import {
   createProviderTimeout,
-  defineApiKeyProviderExecutors,
-  defineProviderProxy,
   providerUserAgent,
   ProviderRequestError,
   readProviderTextBody,
@@ -13,7 +13,6 @@ import {
 
 const service = "nutrient_document_web_services_api";
 const nutrientApiBaseUrl = "https://api.nutrient.io";
-const nutrientRequestTimeoutMs = 30_000;
 const nutrientMaxResponseBytes = 10 * 1024 * 1024;
 
 type NutrientRequestPhase = "validate" | "execute";
@@ -136,7 +135,7 @@ async function nutrientJsonRequest(
   },
   context: NutrientContext,
 ): Promise<unknown> {
-  const timeout = createProviderTimeout(context.signal, nutrientRequestTimeoutMs);
+  const timeout = createProviderTimeout(context.signal);
   try {
     const response = await context.fetcher(new URL(path, nutrientApiBaseUrl), {
       method: input.method,

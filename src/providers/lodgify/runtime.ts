@@ -1,6 +1,6 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
-import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-executors.ts";
 
 import { compactObject, optionalInteger, optionalNumber, optionalRecord, optionalString } from "../../core/cast.ts";
 import {
@@ -14,7 +14,6 @@ import {
 export const lodgifyApiBaseUrl = "https://api.lodgify.com";
 
 const lodgifyValidationPath = "/v2/properties";
-const lodgifyDefaultRequestTimeoutMs = 30_000;
 
 type LodgifyPhase = "validate" | "execute";
 type LodgifyActionContext = Pick<ApiKeyProviderContext, "apiKey" | "fetcher" | "signal">;
@@ -215,7 +214,7 @@ async function getBooking(input: Record<string, unknown>, context: LodgifyAction
 }
 
 async function requestLodgifyJson(input: LodgifyRequestInput): Promise<unknown> {
-  const timeout = createProviderTimeout(input.context.signal, lodgifyDefaultRequestTimeoutMs);
+  const timeout = createProviderTimeout(input.context.signal);
 
   try {
     const response = await input.context.fetcher(buildLodgifyUrl(input.path, input.query), {

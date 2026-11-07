@@ -4,11 +4,14 @@ Managed provider actions can be configured through the [Connector Marketplace](m
 
 OpenConnector is configured with environment variables.
 
+Embedding hosts can also configure opt-in [provider HTTP dispatch hooks](provider-http-dispatch.md)
+through runtime options to admit, delay or deny each upstream HTTP attempt.
+
 | Variable                                    | Default                   | Purpose                                                                                                                                                                     |
 | ------------------------------------------- | ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `PORT`                                      | `3000`                    | Local HTTP server port.                                                                                                                                                     |
 | `HOST`                                      | `127.0.0.1`               | Bind address. Docker image sets `0.0.0.0`.                                                                                                                                  |
-| `OOMOL_CONNECT_ORIGIN`                      | `http://localhost:<PORT>` | Public origin used for OAuth redirect URLs.                                                                                                                                 |
+| `OOMOL_CONNECT_ORIGIN`                      | `http://localhost:<PORT>` | Public origin used for OAuth redirect URLs and Action guide request examples. A path in it is a mount prefix that every request must carry.                                 |
 | `OOMOL_CONNECT_DATA_DIR`                    | `./data`                  | SQLite database, local transit files, and Node upload staging. Docker uses `/app/data`.                                                                                     |
 | `OOMOL_CONNECT_DATABASE_URL`                | unset                     | PostgreSQL connection URL. When unset, the Node runtime uses SQLite under the data directory.                                                                               |
 | `OOMOL_CONNECT_DATABASE_POOL_MAX`           | `10`                      | Maximum PostgreSQL connections per Node runtime instance.                                                                                                                   |
@@ -17,6 +20,7 @@ OpenConnector is configured with environment variables.
 | `OOMOL_CONNECT_NEW_ENCRYPTION_KEY`          | unset                     | New key used by `runtime:data rotate-key`.                                                                                                                                  |
 | `OOMOL_CONNECT_ADMIN_TOKEN`                 | unset                     | Requires bearer-token auth for local admin API, docs, and web console.                                                                                                      |
 | `OOMOL_CONNECT_RUNTIME_TOKEN`               | unset                     | Optional bootstrap runtime bearer token for `/v1` and MCP callers.                                                                                                          |
+| `OOMOL_CONNECT_EVENT_VERIFY_TOKEN`          | unset                     | Dedicated bearer token for `POST /v1/providers/slackbot/events/verify`. When unset the route returns 404. Kept separate from the admin and runtime tokens.                  |
 | `OOMOL_CONNECT_ALLOWED_CUSTOM_OAUTH`        | unset                     | Enables connection-scoped OAuth apps for `*` or a comma-separated service list.                                                                                             |
 | `OOMOL_CONNECT_JWKS_URI`                    | unset                     | Node-only JWKS endpoint for validating runtime JWT access tokens.                                                                                                           |
 | `OOMOL_CONNECT_JWT_ISSUER`                  | unset                     | Expected `iss` claim for runtime JWT access tokens.                                                                                                                         |
@@ -25,6 +29,8 @@ OpenConnector is configured with environment variables.
 | `OOMOL_CONNECT_BLOCKED_ACTIONS`             | unset                     | Comma-separated executable action denylist. Supports `service.*` and `*`.                                                                                                   |
 | `OOMOL_CONNECT_ALLOWED_PROXIES`             | unset                     | Comma-separated provider proxy allowlist. Supports service names and `*`.                                                                                                   |
 | `OOMOL_CONNECT_BLOCKED_PROXIES`             | unset                     | Comma-separated provider proxy denylist. Supports service names and `*`.                                                                                                    |
+| `OOMOL_CONNECT_ALLOWED_TRIGGERS`            | unset                     | Comma-separated Trigger allowlist; exact IDs, `<service>.*`, or `*`.                                                                                                        |
+| `OOMOL_CONNECT_BLOCKED_TRIGGERS`            | unset                     | Comma-separated Trigger block rules; block rules override grants.                                                                                                           |
 | `OOMOL_CONNECT_ALLOW_PRIVATE_NETWORK`       | `false`                   | Allow self-hosted provider connections to target private networks. See below.                                                                                               |
 | `OOMOL_CONNECT_EGRESS_TRUSTED_HOSTS`        | unset                     | Trusted hosts routed through a corporate VPN. See below.                                                                                                                    |
 | `OOMOL_CONNECT_LOG_LEVEL`                   | `info`                    | Pino log level for the local Node server.                                                                                                                                   |
@@ -39,6 +45,10 @@ OpenConnector is configured with environment variables.
 | `OOMOL_CONNECT_S3_SECRET_ACCESS_KEY`        | SDK credential chain      | Explicit S3 secret access key. Configure it with the access key ID, or omit both.                                                                                           |
 | `OOMOL_CONNECT_S3_SESSION_TOKEN`            | unset                     | Optional session token used with explicit S3 credentials.                                                                                                                   |
 | `OOMOL_CONNECT_RUN_LIMIT`                   | `5000`                    | Maximum number of recent action run audit records to retain.                                                                                                                |
+| `OOMOL_CONNECT_CATALOG_LAZY_SCHEMAS`        | `true`                    | Read action JSON schemas from the catalog files on demand instead of keeping them in memory. See below.                                                                     |
+| `OOMOL_CONNECT_CATALOG_SCHEMA_CACHE_FILES`  | `64`                      | Provider files whose action schemas stay cached when lazy schemas are on.                                                                                                   |
+| `OOMOL_CONNECT_OAUTH_CLOSE_DELAY_SECONDS`   | `5`                       | Seconds the OAuth completion page waits before closing its window. `0` closes it as soon as it loads.                                                                       |
+| `OOMOL_CONNECT_OAUTH_RESULT_ORIGINS`        | unset                     | Comma-separated exact origins a provider-refusal callback page may `postMessage` its result to (its opener). `*` is refused.                                                |
 
 Example:
 
@@ -225,11 +235,55 @@ multicast, and other unsafe special-use targets remain blocked.
 > a deployment-wide egress exception, not per-connection authorization. Keep
 > entries narrowly scoped to domains you trust.
 
+## Lazy catalog schemas
+
+The generated catalog ships one JSON file per provider. Action input and output schemas
+make up most of that data. Both the standalone server and embedded runtime now load
+schemas on demand by default, reducing startup work and resident memory.
+
+To restore eager loading, which keeps the complete catalog in memory:
+
+```bash
+OOMOL_CONNECT_CATALOG_LAZY_SCHEMAS=false npm run dev
+```
+
+Embedded hosts use `lazySchemas: false` for the same behavior. This default changed
+from eager loading for the standalone server; see the [release notes](../CHANGELOG.md).
+
+Action metadata stays in memory: ids, names, descriptions, required scopes, provider permissions,
+follow-up and async lifecycle links, and execution flags. Only the two schema fields are read back
+from the provider file when something asks for them, and the schemas of the 64 most recently used
+provider files stay cached. `OOMOL_CONNECT_CATALOG_SCHEMA_CACHE_FILES` tunes that number: each
+cached file holds every schema of one provider, typically tens to a few hundred KB parsed, so 64
+files is on the order of a few MB to a few tens of MB. Values that are not positive integers fall
+back to the default. Set it higher when one server serves many providers repeatedly, and lower on
+the tightest machines. Responses are byte-identical to eager loading, so this is a
+memory-for-reads trade and not an API change.
+
+`npm run generate:catalog` also writes `catalog/apps-index.json`, the catalog without its schemas.
+With lazy schemas on, the server reads that one file at startup instead of every provider file (on
+the single-file executable this is what keeps the embedded provider files from being paged in);
+schemas still come from the provider files on access. An index that does not describe the provider
+files next to it is refused at startup, and a missing index falls back to reading the provider files
+with a warning; both are fixed by regenerating the catalog.
+
+What changes operationally:
+
+- The catalog directory must stay readable while the server runs. Replacing or deleting it under a
+  running server makes later schema reads fail. The single-file executable reads the catalog from
+  its own embedded filesystem, so it needs nothing extra.
+- Keep `catalog/apps-index.json` next to `catalog/apps/` when copying a generated catalog.
+- Reading or running one action reads one provider file. `GET /api/actions`, which serializes every
+  action, and action search across many services re-read files as they go.
+- This is a Node and single-binary setting. Cloudflare Workers load the catalog from asset chunks
+  and ignore it.
+
 ## Cloudflare Workers
 
 Cloudflare uses the same environment variable names for origin, static auth tokens, execution
-policy, transit file limits, and data encryption. The JWT settings above, `PORT`, `HOST`, and
-`OOMOL_CONNECT_DATA_DIR` are Node-only settings.
+policy, transit file limits, and data encryption. The JWT settings above, `PORT`, `HOST`,
+`OOMOL_CONNECT_DATA_DIR`, `OOMOL_CONNECT_CATALOG_LAZY_SCHEMAS`, and
+`OOMOL_CONNECT_CATALOG_SCHEMA_CACHE_FILES` are Node-only settings.
 
 The Worker runtime also requires these bindings in `wrangler.local.jsonc`. Copy
 `wrangler.example.jsonc` to `wrangler.local.jsonc` and fill in your own Cloudflare resource IDs
@@ -251,3 +305,63 @@ Set secrets with Wrangler instead of committing them to config:
 npx wrangler secret put OOMOL_CONNECT_ADMIN_TOKEN --config wrangler.local.jsonc
 npx wrangler secret put OOMOL_CONNECT_ENCRYPTION_KEY --config wrangler.local.jsonc
 ```
+
+Persistent runtime tokens need explicit `allowedTriggers` grants for Provider Triggers; old and new tokens default to no Trigger access. Trigger grants do not require `allowedProxies`. Stateful subscriptions require a persistent runtime token; environment tokens and verified JWTs support only permitted `options` and `read`. See [Provider Triggers](runtime-api.md#provider-triggers) for lifecycle, cleanup, account recovery and token rotation. Workers must have scheduled maintenance enabled and catalog assets available when Trigger cleanup is pending.
+
+## Slack event verification
+
+Configure the default Slack Bot OAuth application in the console with its Client ID and Client Secret. Its optional **Slack App ID** and **Slack Signing Secret** fields enable event verification; they are not required for OAuth authorization or ordinary actions. The Signing Secret belongs to the Slack application, not to each workspace installation.
+
+Set `OOMOL_CONNECT_EVENT_VERIFY_TOKEN` to a dedicated secret and restart the runtime. An ingress service can then forward the exact Slack request body and signature headers:
+
+```http
+POST /v1/providers/slackbot/events/verify
+Authorization: Bearer <event-verify-token>
+X-Slack-Request-Timestamp: <original-timestamp>
+X-Slack-Signature: <original-signature>
+Content-Type: application/json
+
+<original Slack request body, without re-serialization>
+```
+
+This endpoint uses only the deployment-default `slackbot` OAuth application configuration. Connection-specific OAuth app settings are not used, even if they contain a Signing Secret. No Connection or Open Flow deployment is required. Admin and runtime tokens do not grant access to this endpoint; the dedicated verification token grants no access to other APIs.
+
+Successful responses use the runtime envelope:
+
+```json
+{
+  "success": true,
+  "message": "OK",
+  "data": { "valid": true, "appId": "A0123456789", "challenge": null },
+  "meta": {}
+}
+```
+
+For `url_verification`, `challenge` contains the validated string. Your ingress must reply to Slack with the challenge; the verifier does not send that reply. An explicit `api_app_id` must match the configured app, including on challenges. Ordinary requests must have type `event_callback` and a matching `api_app_id`. The verifier checks the minimal envelope, not workspace authorization or business event fields.
+
+The body limit is 64 KiB. Slack timestamps may differ from server time by at most 300 seconds in either direction. Repeated valid requests inside that window remain valid: your ingress owns deduplication, retries and scheduling. No event is stored or executed by verification.
+
+| HTTP | errorCode                           | Meaning                                                  |
+| ---- | ----------------------------------- | -------------------------------------------------------- |
+| 400  | `invalid_event_payload`             | Invalid JSON, unsupported envelope, or invalid challenge |
+| 401  | `unauthorized`                      | Missing or incorrect dedicated token                     |
+| 401  | `invalid_webhook_signature`         | Invalid Slack signature                                  |
+| 401  | `invalid_webhook_timestamp`         | Invalid timestamp or outside the allowed window          |
+| 403  | `webhook_app_mismatch`              | App ID does not match the configured application         |
+| 404  | `event_verification_disabled`       | No verification token configured                         |
+| 409  | `event_verification_not_configured` | Default Slack App ID or Signing Secret missing           |
+| 413  | `webhook_request_too_large`         | Body exceeds 64 KiB                                      |
+
+Errors use the runtime failure envelope with `success: false`, `errorCode`, `message`, `data` and `meta`. Infrastructure failures remain server errors rather than invalid signatures.
+
+When updating the default OAuth app through `PUT /api/oauth/configs/slackbot`, keep the same `clientId` and omit `clientSecret` or individual `secretExtra` keys to retain their stored values. Submit a new `secretExtra.signingSecret` to rotate it, or an empty string to clear it. Other configuration fields retain their existing replacement semantics. The console keeps blank secret inputs unchanged and provides an explicit clear-on-save checkbox for optional secrets. Changing `clientId` starts a new application configuration and does not inherit old secrets. Already-created Connections retain their own metadata; verification always reads the current default application configuration.
+
+## Standalone and embedded configuration
+
+The standalone server reads the environment variables on this page, owns its HTTP
+listener, and closes the runtime on process shutdown. The [embedded runtime](headless.md)
+accepts explicit options, leaves HTTP serving and shutdown to the host, and does not
+read these environment variables. Both default to lazy action schemas; use
+`OOMOL_CONNECT_CATALOG_LAZY_SCHEMAS=false` or `lazySchemas: false` for eager loading.
+The embedded package includes its catalog and migrations; custom `assets` paths
+must point to those generated assets. The host must await `runtime.close()`.

@@ -4,25 +4,24 @@ import type {
   ProviderExecutors,
   ProviderProxyExecutor,
 } from "../../core/types.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
 import XMLBuilder from "fast-xml-builder";
 import { XMLParser } from "fast-xml-parser";
 import { optionalRecord, optionalString } from "../../core/cast.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
 import {
   createProviderTimeout,
-  defineProviderExecutors,
-  defineProviderProxy,
   providerUserAgent,
   ProviderRequestError,
   readProviderTextBody,
-  requireApiKeyCredential,
 } from "../provider-runtime.ts";
 
 const service = "credit_repair_cloud";
 const creditRepairCloudApiBaseUrl = "https://app.creditrepaircloud.com/api";
 const validationRecordId = "MQ==";
-const creditRepairCloudRequestTimeoutMs = 30_000;
 const creditRepairCloudMaxResponseBytes = 10 * 1024 * 1024;
 
 interface CreditRepairCloudActionSpec {
@@ -207,7 +206,7 @@ async function requestCreditRepairCloud(context: CreditRepairCloudRequestContext
   const body = new URLSearchParams();
   body.set("xmlData", xmlData);
 
-  const timeout = createProviderTimeout(context.signal, creditRepairCloudRequestTimeoutMs);
+  const timeout = createProviderTimeout(context.signal);
   try {
     const response = await context.fetcher(url, {
       method: "POST",

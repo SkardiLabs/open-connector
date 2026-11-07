@@ -31,7 +31,16 @@ afterEach(() => {
 describe("Google Drive files.get", () => {
   it("returns metadata when alt is omitted", async () => {
     const requests = stubGoogleResponses([
-      Response.json({ id: "drive-file-1", name: "notes.txt", mimeType: "text/plain", size: "6" }),
+      Response.json({
+        id: "drive-file-1",
+        name: "notes.txt",
+        mimeType: "text/plain",
+        size: "6",
+        md5Checksum: "8b1a9953c4611296a827abf8c47804d7",
+        headRevisionId: "revision-1",
+        inheritedPermissionsDisabled: true,
+        permissionIds: ["permission-1", "permission-2"],
+      }),
     ]);
 
     const result = await executeGet({ fileId: "drive-file-1" });
@@ -45,6 +54,10 @@ describe("Google Drive files.get", () => {
         webViewLink: null,
         createdTime: null,
         modifiedTime: null,
+        md5Checksum: "8b1a9953c4611296a827abf8c47804d7",
+        headRevisionId: "revision-1",
+        inheritedPermissionsDisabled: true,
+        permissionIds: ["permission-1", "permission-2"],
         sizeBytes: 6,
         driveId: null,
       },
@@ -52,6 +65,10 @@ describe("Google Drive files.get", () => {
     expect(requests).toHaveLength(1);
     expect(requests[0]?.url.pathname).toBe("/drive/v3/files/drive-file-1");
     expect(requests[0]?.url.searchParams.get("alt")).toBeNull();
+    expect(requests[0]?.url.searchParams.get("fields")).toContain("md5Checksum");
+    expect(requests[0]?.url.searchParams.get("fields")).toContain("headRevisionId");
+    expect(requests[0]?.url.searchParams.get("fields")).toContain("inheritedPermissionsDisabled");
+    expect(requests[0]?.url.searchParams.get("fields")).toContain("permissionIds");
   });
 
   it("downloads a blob file with shared-drive and abuse acknowledgement parameters", async () => {
@@ -183,6 +200,181 @@ describe("Google Drive files.get", () => {
   });
 });
 
+describe("Google Drive files.list sharing and tree observations", () => {
+  /// The projection is the whole mechanism: `fields` is an allow-list, so a
+  /// member dropped here is a field Drive never sends and no amount of
+  /// downstream mapping can recover. Asserted on the request rather than only
+  /// on the row, because a row test passes on a fixture that was never asked
+  /// for.
+  it("projects sharing, shortcut, and search-completeness observations", async () => {
+    const requests = stubGoogleResponses([Response.json({ files: [], nextPageToken: null })]);
+
+    await executeList({});
+
+    const fields = requests[0]?.url.searchParams.get("fields") ?? "";
+    expect(fields).toContain("ownedByMe");
+    expect(fields).toContain("capabilities(canShare)");
+    expect(fields).toContain("sharedWithMeTime");
+    expect(fields).toContain("shortcutDetails(targetId,targetMimeType,targetResourceKey)");
+    expect(fields).toContain("incompleteSearch");
+    expect(fields).toContain("md5Checksum");
+    expect(fields).toContain("headRevisionId");
+    expect(fields).toContain("inheritedPermissionsDisabled");
+    expect(fields).toContain("permissionIds");
+  });
+
+  it("preserves reported sharing, shortcut, and binary-content observations", async () => {
+    stubGoogleResponses([
+      Response.json({
+        incompleteSearch: true,
+        files: [
+          {
+            id: "folder-1",
+            name: "Shared shortcut",
+            mimeType: "application/vnd.google-apps.shortcut",
+            ownedByMe: true,
+            capabilities: { canShare: true },
+            sharedWithMeTime: "2026-10-25T12:00:00Z",
+            shortcutDetails: {
+              targetId: "target-1",
+              targetMimeType: "application/vnd.google-apps.folder",
+              targetResourceKey: "resource-key-1",
+            },
+          },
+          {
+            id: "binary-1",
+            name: "notes.txt",
+            mimeType: "text/plain",
+            md5Checksum: "8b1a9953c4611296a827abf8c47804d7",
+            headRevisionId: "revision-1",
+            inheritedPermissionsDisabled: true,
+            permissionIds: ["permission-1"],
+          },
+        ],
+      }),
+    ]);
+
+    const result = await executeList({});
+
+    expect(result.ok).toBe(true);
+    const file = (result.output as { files: Record<string, unknown>[] }).files[0]!;
+    expect(file.ownedByMe).toBe(true);
+    expect(file.capabilities).toEqual({ canShare: true });
+    expect(file.sharedWithMeTime).toBe("2026-10-25T12:00:00Z");
+    expect(file.shortcutDetails).toEqual({
+      targetId: "target-1",
+      targetMimeType: "application/vnd.google-apps.folder",
+      targetResourceKey: "resource-key-1",
+    });
+    expect(result.output).toMatchObject({ incompleteSearch: true });
+    expect((result.output as { files: Record<string, unknown>[] }).files[1]).toMatchObject({
+      md5Checksum: "8b1a9953c4611296a827abf8c47804d7",
+      headRevisionId: "revision-1",
+      inheritedPermissionsDisabled: true,
+      permissionIds: ["permission-1"],
+    });
+  });
+
+  /// `false` is a real answer and must survive: it is the whole point of the
+  /// field, and a mapper that treated falsy as absent would erase exactly the
+  /// rows a caller wants to know about.
+  it("keeps a negative answer rather than dropping it", async () => {
+    stubGoogleResponses([
+      Response.json({
+        incompleteSearch: false,
+        files: [
+          {
+            id: "folder-2",
+            name: "Shared with me",
+            mimeType: "application/vnd.google-apps.folder",
+            ownedByMe: false,
+            capabilities: { canShare: false },
+            inheritedPermissionsDisabled: false,
+            permissionIds: [],
+          },
+        ],
+      }),
+    ]);
+
+    const result = await executeList({});
+
+    const file = (result.output as { files: Record<string, unknown>[] }).files[0]!;
+    expect(file.ownedByMe).toBe(false);
+    expect(file.capabilities).toEqual({ canShare: false });
+    expect(file.inheritedPermissionsDisabled).toBe(false);
+    expect(file.permissionIds).toEqual([]);
+    expect(result.output).toMatchObject({ incompleteSearch: false });
+  });
+
+  /// "Drive did not say" is not "the caller may not share". A default would
+  /// make those two the same, and they lead a consumer to opposite actions.
+  it("omits both when Drive did not answer them", async () => {
+    stubGoogleResponses([
+      Response.json({
+        files: [{ id: "folder-3", name: "Unknown", mimeType: "application/vnd.google-apps.folder" }],
+      }),
+    ]);
+
+    const result = await executeList({});
+
+    const file = (result.output as { files: Record<string, unknown>[] }).files[0]!;
+    expect(file).not.toHaveProperty("ownedByMe");
+    expect(file).not.toHaveProperty("capabilities");
+    const serialized = JSON.parse(JSON.stringify(result.output));
+    expect(serialized).not.toHaveProperty("incompleteSearch");
+    expect(serialized.files[0]).not.toHaveProperty("sharedWithMeTime");
+    expect(serialized.files[0]).not.toHaveProperty("shortcutDetails");
+    expect(serialized.files[0]).not.toHaveProperty("md5Checksum");
+    expect(serialized.files[0]).not.toHaveProperty("headRevisionId");
+    expect(serialized.files[0]).not.toHaveProperty("inheritedPermissionsDisabled");
+    expect(serialized.files[0]).not.toHaveProperty("permissionIds");
+  });
+
+  it.each([
+    { inheritedPermissionsDisabled: true, permissionIds: ["permission-1"] },
+    { inheritedPermissionsDisabled: false, permissionIds: [] },
+    {},
+    { inheritedPermissionsDisabled: null, permissionIds: null },
+  ])("preserves optional ACL observations in change events: %j", async (observations) => {
+    const requests = stubGoogleResponses([
+      Response.json({
+        changes: [
+          {
+            fileId: "file-1",
+            removed: false,
+            file: {
+              id: "file-1",
+              name: "notes.txt",
+              mimeType: "text/plain",
+              ...observations,
+            },
+          },
+        ],
+        newStartPageToken: "next-token",
+      }),
+    ]);
+    const result = await executeAction(
+      provider.actions.find((action) => action.name === "changes.list")!,
+      executors["googledrive.changes.list"],
+      { pageToken: "start-token" },
+      { getCredential: async () => oauthCredential },
+    );
+    expect(result.ok).toBe(true);
+    const serialized = JSON.parse(JSON.stringify(result.output));
+    const file = serialized.changes[0].file;
+    for (const key of ["inheritedPermissionsDisabled", "permissionIds"] as const) {
+      if (key in observations && observations[key] !== null) {
+        expect(file[key]).toEqual(observations[key]);
+      } else {
+        expect(file).not.toHaveProperty(key);
+      }
+    }
+    const fields = requests[0]?.url.searchParams.get("fields") ?? "";
+    expect(fields).toContain("inheritedPermissionsDisabled");
+    expect(fields).toContain("permissionIds");
+  });
+});
+
 describe("Google Drive OAuth credential validation", () => {
   it("requests only the About user field and uses its email address as the account id", async () => {
     const requests: CapturedRequest[] = [];
@@ -273,6 +465,21 @@ async function executeGet(input: Record<string, unknown>, transitFiles?: Transit
   return executeAction(
     provider.actions.find((action) => action.name === "files.get")!,
     executors["googledrive.files.get"],
+    input,
+    context,
+  );
+}
+
+async function executeList(input: Record<string, unknown>) {
+  const context: ExecutionContext = {
+    getCredential: async (service) => {
+      expect(service).toBe("googledrive");
+      return oauthCredential;
+    },
+  };
+  return executeAction(
+    provider.actions.find((action) => action.name === "files.list")!,
+    executors["googledrive.files.list"],
     input,
     context,
   );

@@ -1,13 +1,14 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
 
-import { Buffer } from "node:buffer";
 import { compactObject, optionalInteger, optionalRecord, optionalString, positiveInteger } from "../../core/cast.ts";
 import { assertPublicHttpUrl, isPrivateNetworkAccessAllowed } from "../../core/request.ts";
 import {
+  basicAuthorizationHeader,
   createProviderTimeout,
   isAbortSignalError,
   ProviderRequestError,
   providerUserAgent,
+  providerInputError,
 } from "../provider-runtime.ts";
 
 type MauticCredential = {
@@ -34,7 +35,6 @@ type MauticActionHandler = (
   signal?: AbortSignal,
 ) => Promise<unknown>;
 
-const mauticRequestTimeoutMs = 30_000;
 const mauticMaxResponseBytes = 10 * 1024 * 1024;
 
 export const mauticActionHandlers: Record<string, MauticActionHandler> = {
@@ -178,7 +178,7 @@ export function normalizeMauticBaseUrl(
 
   const url = assertPublicHttpUrl(trimmed, {
     fieldName: "baseUrl",
-    createError: (message) => new ProviderRequestError(400, message),
+    createError: providerInputError,
     allowPrivateNetwork,
   });
   if (url.protocol !== "https:") {
@@ -275,13 +275,13 @@ async function requestMauticJson(input: MauticRequest): Promise<Record<string, u
       url.searchParams.set(key, String(value));
     }
   }
-  const timeout = createProviderTimeout(input.signal, mauticRequestTimeoutMs);
+  const timeout = createProviderTimeout(input.signal);
   try {
     const response = await input.fetcher(url, {
       method: input.method ?? "GET",
       headers: {
         accept: "application/json",
-        authorization: `Basic ${Buffer.from(`${input.credential.username}:${input.credential.password}`).toString("base64")}`,
+        authorization: basicAuthorizationHeader(`${input.credential.username}:${input.credential.password}`),
         "user-agent": providerUserAgent,
         ...(input.jsonBody ? { "content-type": "application/json" } : {}),
       },
@@ -392,7 +392,7 @@ function mapMauticError(
     return new ProviderRequestError(403, "The connected Mautic user does not have permission to perform this action");
   }
   if (phase === "validate" && response.status >= 400 && response.status < 500) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   if (response.status === 404) {
     return new ProviderRequestError(404, message);

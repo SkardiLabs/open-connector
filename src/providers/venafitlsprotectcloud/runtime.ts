@@ -1,20 +1,22 @@
 import type { CredentialValidationResult, ProviderExecutors } from "../../core/types.ts";
-import type { ProviderFetch, ProviderRuntimeHandler } from "../provider-runtime.ts";
+import type { ProviderRuntimeHandler } from "../provider-executors.ts";
+import type { ProviderFetch } from "../provider-runtime.ts";
 
 import { createHash } from "node:crypto";
 import { optionalInteger, optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
 import {
-  defineProviderExecutors,
+  providerInputError,
   ProviderRequestError,
   providerUserAgent,
-  requireApiKeyCredential,
+  defaultProviderRequestTimeoutMs,
 } from "../provider-runtime.ts";
 
 export const venafiCloudBaseUrls = {
   us: "https://api.venafi.cloud",
   eu: "https://api.venafi.eu",
 };
-const requestTimeoutMs = 30_000;
 
 interface VenafiCloudContext {
   apiKey: string;
@@ -28,7 +30,7 @@ export async function validateVenafiCloudCredential(
   fetcher: typeof fetch,
   signal?: AbortSignal,
 ): Promise<CredentialValidationResult> {
-  const apiKey = requiredString(input.apiKey, "apiKey", invalidInput);
+  const apiKey = requiredString(input.apiKey, "apiKey", providerInputError);
   const region = readRegion(input.region);
   const preferences = await requestVenafiCloud({
     apiKey,
@@ -54,7 +56,7 @@ export async function validateVenafiCloudCredential(
 
 const handlers: Record<string, ProviderRuntimeHandler<VenafiCloudContext>> = {
   async get_certificate(input, context) {
-    const certificateId = requiredString(input.certificateId, "certificateId", invalidInput);
+    const certificateId = requiredString(input.certificateId, "certificateId", providerInputError);
     return {
       certificate: await requestVenafiCloud({
         ...context,
@@ -85,7 +87,7 @@ const handlers: Record<string, ProviderRuntimeHandler<VenafiCloudContext>> = {
     return { certificates, total: optionalInteger(object?.total) ?? null };
   },
   async get_certificate_request(input, context) {
-    const requestId = requiredString(input.certificateRequestId, "certificateRequestId", invalidInput);
+    const requestId = requiredString(input.certificateRequestId, "certificateRequestId", providerInputError);
     return {
       certificateRequest: await requestVenafiCloud({
         ...context,
@@ -133,7 +135,7 @@ async function requestVenafiCloud(input: {
       "tppl-api-key": input.apiKey,
       "user-agent": providerUserAgent,
     },
-    signal: input.signal ?? AbortSignal.timeout(requestTimeoutMs),
+    signal: input.signal ?? AbortSignal.timeout(defaultProviderRequestTimeoutMs),
   });
   const payload = await readPayload(response);
   if (!response.ok) throw upstreamError(response.status, payload, input.operation, input.phase);
@@ -166,8 +168,4 @@ function stringifyInteger(value: unknown) {
 
 function fingerprint(value: string) {
   return createHash("sha256").update(value).digest("hex").slice(0, 16);
-}
-
-function invalidInput(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
 }

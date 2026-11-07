@@ -17,11 +17,9 @@ import { join } from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { assertPublicHttpUrl } from "../../core/request.ts";
-import {
-  defineProviderExecutors,
-  ProviderRequestError,
-  requireCustomCredential,
-} from "../../providers/provider-runtime.ts";
+import { requireCustomCredential } from "../../providers/provider-credentials.ts";
+import { defineProviderExecutors } from "../../providers/provider-executors.ts";
+import { ProviderRequestError } from "../../providers/provider-runtime.ts";
 import { mailConnectionTimeoutMs, mailImapPort, mailMessageFetchByteLimit, mailSmtpPort } from "./config.ts";
 import { MailProtocolError } from "./errors.ts";
 import { sanitizeTempFileName } from "./temp-files.ts";
@@ -439,6 +437,14 @@ export async function executeMailAction(
         } finally {
           await prepared.cleanup();
         }
+      }
+      default: {
+        // A mail action name without a branch would otherwise fall off the
+        // switch and resolve to undefined, which the runtime reports as an
+        // empty success. The never assignment makes the compiler reject the
+        // next action name that skips this switch.
+        const exhaustiveActionName: never = actionName;
+        throw new ProviderRequestError(500, `Unsupported mail action: ${exhaustiveActionName}`);
       }
     }
   } catch (error) {

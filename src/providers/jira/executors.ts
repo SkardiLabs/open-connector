@@ -4,7 +4,8 @@ import type {
   ProviderExecutors,
   ProviderProxyExecutor,
 } from "../../core/types.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
+import type { IntegrationDefinition } from "../../triggers/common/integration.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
 import {
   compactObject,
@@ -12,15 +13,18 @@ import {
   optionalInteger as asOptionalInteger,
   optionalRecord as asOptionalObject,
   optionalString as asOptionalString,
+  optionalStringArray,
 } from "../../core/cast.ts";
 import { assertPublicHttpUrl, isPrivateNetworkAccessAllowed } from "../../core/request.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
 import {
   createProviderFetch,
   ProviderRequestError,
-  defineProviderExecutors,
-  defineProviderProxy,
   providerUserAgent,
+  providerInputError,
 } from "../provider-runtime.ts";
+import { jiraIssueEvents } from "./trigger-on-issue-event.ts";
 
 type JiraAccessibleResource = {
   id?: unknown;
@@ -132,7 +136,17 @@ async function fetchJiraCurrentAccount(
   const resources = readAccessibleResources(accessibleResourcesPayload);
   const primaryResource = pickPrimaryResource(resources);
   if (!primaryResource) {
-    throw new ProviderRequestError(400, "jira authorization does not include an accessible Jira Cloud site");
+    return {
+      profile: {
+        accountId: "jira",
+        displayName: "Jira Cloud",
+      },
+      grantedScopes: [],
+      metadata: {
+        resourceCount: resources.length,
+        validationEndpoint: "/oauth/token/accessible-resources",
+      },
+    };
   }
 
   const cloudId = requireNonEmptyString(primaryResource.id, "jira cloudId");
@@ -626,7 +640,7 @@ export function normalizeJiraServerApiBaseUrl(
   }
   const url = assertPublicHttpUrl(instanceUrl, {
     fieldName: "baseUrl",
-    createError: (message) => new ProviderRequestError(400, message),
+    createError: providerInputError,
     allowPrivateNetwork,
   });
   if (url.username || url.password) {
@@ -669,6 +683,11 @@ function readAccessibleResources(payload: unknown) {
     const record = asOptionalObject(item);
     if (!record) {
       throw new ProviderRequestError(502, "jira accessible resource must be an object");
+    }
+    requireNonEmptyString(record.id, "jira accessible resource id");
+    requireNonEmptyString(record.url, "jira accessible resource URL");
+    if (!optionalStringArray(record.scopes)) {
+      throw new ProviderRequestError(502, "jira accessible resource scopes must be an array of strings");
     }
     return record as JiraAccessibleResource;
   });
@@ -1029,7 +1048,7 @@ function mapJiraResponseError(
   const message = readJiraErrorMessage(payload);
 
   if (status === 400) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   if (status === 401) {
     return new ProviderRequestError(phase === "auth" ? 400 : 401, message);
@@ -1041,7 +1060,7 @@ function mapJiraResponseError(
     return new ProviderRequestError(502, message, 403);
   }
   if (status === 404 && notFoundAsInvalidInput) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   if (status === 429) {
     return new ProviderRequestError(429, message);
@@ -1163,3 +1182,5 @@ function trimLeadingSlash(value: string) {
   }
   return value.slice(index);
 }
+
+export const triggers: readonly IntegrationDefinition[] = [jiraIssueEvents];

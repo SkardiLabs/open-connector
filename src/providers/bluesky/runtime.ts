@@ -1,6 +1,7 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
-import type { ApiKeyProviderContext, ProviderFetch } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
+import type { ProviderFetch } from "../provider-runtime.ts";
 
 import { compactObject, optionalInteger, optionalRecord, optionalString } from "../../core/cast.ts";
 import { createProviderTimeout, providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
@@ -12,7 +13,6 @@ export interface BlueskyContext extends ApiKeyProviderContext {
 
 export const blueskyApiBaseUrl = "https://bsky.social";
 
-const blueskyDefaultRequestTimeoutMs = 30_000;
 const createSessionPath = "/xrpc/com.atproto.server.createSession";
 
 export type BlueskyRequestPhase = "validate" | "execute";
@@ -238,7 +238,7 @@ function buildTextPostRecord(input: Record<string, unknown>): Record<string, unk
 
 async function requestBlueskyJson(options: BlueskyRequestOptions): Promise<unknown> {
   const url = buildBlueskyUrl(options.path, options.query);
-  const timeout = createProviderTimeout(options.signal, blueskyDefaultRequestTimeoutMs);
+  const timeout = createProviderTimeout(options.signal);
   try {
     let response: Response;
     try {

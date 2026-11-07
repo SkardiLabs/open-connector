@@ -613,14 +613,18 @@ const issueCommentPaginationFields = {
 export const githubActions: ActionDefinition[] = [
   action({
     name: "get_current_user",
-    description: "Get the current authenticated GitHub user profile.",
+    operationType: "read",
+    description:
+      "Get the current authenticated GitHub user profile using a personal access token or OAuth user credential. GitHub App installation credentials are not supported.",
     requiredScopes: githubUserReadScopes,
     inputSchema: s.object({}),
     outputSchema: githubCurrentUserSchema,
   }),
   action({
     name: "list_my_repositories",
-    description: "List repositories visible to the authenticated GitHub user.",
+    operationType: "read",
+    description:
+      "List repositories visible to the authenticated GitHub user, or accessible to the GitHub App installation. Installation credentials support pagination only; omit visibility, sort and direction.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
       visibility: s.stringEnum(["all", "public", "private"]),
@@ -634,6 +638,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "create_repository",
+    operationType: "write",
     description: "Create a repository for the authenticated GitHub user.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -653,6 +658,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "list_branches",
+    operationType: "read",
     description: "List branches in a GitHub repository.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -667,6 +673,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "get_branch",
+    operationType: "read",
     description: "Get a GitHub branch by name.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -678,6 +685,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "get_repository",
+    operationType: "read",
     description: "Get metadata for a GitHub repository by owner and name.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -688,6 +696,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "delete_repository",
+    operationType: "destructive",
     description: "Delete a GitHub repository by owner and name.",
     requiredScopes: githubDeleteRepoScopes,
     inputSchema: s.object({
@@ -698,6 +707,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "list_commits",
+    operationType: "read",
     description: "List commits in a GitHub repository with optional branch, path, author, and date filters.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -718,6 +728,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "create_ref",
+    operationType: "write",
     description: "Create a Git reference in a GitHub repository.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -730,6 +741,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "get_commit",
+    operationType: "read",
     description: "Get a commit by SHA in a GitHub repository.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -741,6 +753,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "compare_commits",
+    operationType: "read",
     description: "Compare two commit references in a GitHub repository.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -758,6 +771,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "list_repository_issues",
+    operationType: "read",
     description:
       "List issues for a GitHub repository. Pull requests are filtered out of the response; pageInfo.fetched reports the raw page length before filtering, so paginating callers must continue while fetched equals perPage (30 by default) even when the issues array comes back short or empty.",
     requiredScopes: githubRepoScopes,
@@ -793,6 +807,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "create_issue",
+    operationType: "write",
     description: "Create an issue in a GitHub repository.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -808,6 +823,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "get_issue",
+    operationType: "read",
     description: "Get a GitHub issue by number.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -819,6 +835,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "update_issue",
+    operationType: "destructive",
     description: "Update a GitHub issue by number.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -836,6 +853,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "list_repository_labels",
+    operationType: "read",
     description: "List labels available in a GitHub repository.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -849,6 +867,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "create_label",
+    operationType: "write",
     description: "Create a label in a GitHub repository.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -862,6 +881,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "list_issue_labels",
+    operationType: "read",
     description: "List labels applied to a GitHub issue.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -876,6 +896,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "add_issue_labels",
+    operationType: "write",
     description: "Add labels to a GitHub issue.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -890,6 +911,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "set_issue_labels",
+    operationType: "destructive",
     description: "Replace all labels on a GitHub issue.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -904,6 +926,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "remove_issue_label",
+    operationType: "destructive",
     description: "Remove one label from a GitHub issue.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -918,6 +941,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "clear_issue_labels",
+    operationType: "destructive",
     description: "Remove all labels from a GitHub issue.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -929,6 +953,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "add_issue_assignees",
+    operationType: "write",
     description: "Add assignees to a GitHub issue.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -941,6 +966,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "remove_issue_assignees",
+    operationType: "destructive",
     description: "Remove assignees from a GitHub issue.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -953,6 +979,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "lock_issue",
+    operationType: "destructive",
     description: "Lock a GitHub issue conversation.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -967,6 +994,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "unlock_issue",
+    operationType: "write",
     description: "Unlock a GitHub issue conversation.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -980,6 +1008,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "list_issue_comments",
+    operationType: "read",
     description: "List comments under a GitHub issue.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -994,6 +1023,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "create_issue_comment",
+    operationType: "write",
     description: "Create a comment on a GitHub issue.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -1006,6 +1036,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "search_issues_and_pull_requests",
+    operationType: "read",
     description: "Search GitHub issues and pull requests with raw GitHub search syntax or structured filters.",
     requiredScopes: [],
     inputSchema: s.object({
@@ -1048,6 +1079,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "list_pull_requests",
+    operationType: "read",
     description: "List pull requests for a GitHub repository.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -1066,6 +1098,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "list_pull_requests_associated_with_commit",
+    operationType: "read",
     description: "List pull requests associated with a commit SHA.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -1080,6 +1113,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "list_pull_request_files",
+    operationType: "read",
     description: "List files changed in a GitHub pull request.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -1094,6 +1128,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "list_pull_request_commits",
+    operationType: "read",
     description: "List commits on a GitHub pull request.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -1108,6 +1143,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "list_pull_request_requested_reviewers",
+    operationType: "read",
     description: "List requested reviewers on a GitHub pull request.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -1119,6 +1155,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "list_pull_request_reviews",
+    operationType: "read",
     description: "List reviews for a GitHub pull request.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -1134,6 +1171,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "list_pull_request_review_comments",
+    operationType: "read",
     description: "List review comments on a GitHub pull request.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -1152,6 +1190,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "create_pull_request_review",
+    operationType: "write",
     description: "Create a review for a GitHub pull request, optionally with inline comments.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -1167,6 +1206,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "submit_pull_request_review",
+    operationType: "write",
     description: "Submit a pending GitHub pull request review.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -1181,6 +1221,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "create_pull_request_review_comment",
+    operationType: "write",
     description: "Create a review comment on a GitHub pull request diff.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -1195,6 +1236,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "reply_pull_request_review_comment",
+    operationType: "write",
     description: "Reply to a top-level GitHub pull request review comment.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -1208,6 +1250,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "get_pull_request",
+    operationType: "read",
     description: "Get a GitHub pull request by number.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -1219,6 +1262,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "create_pull_request",
+    operationType: "write",
     description: "Create a pull request in a GitHub repository.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -1235,6 +1279,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "update_pull_request",
+    operationType: "destructive",
     description: "Update a GitHub pull request title, body, state, base branch, or maintainer-can-modify flag.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -1251,6 +1296,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "update_pull_request_branch",
+    operationType: "write",
     description: "Update a GitHub pull request branch with the latest base branch changes.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -1266,6 +1312,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "request_pull_request_reviewers",
+    operationType: "write",
     description: "Request reviewers on a GitHub pull request.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -1279,6 +1326,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "remove_pull_request_reviewers",
+    operationType: "destructive",
     description: "Remove requested reviewers from a GitHub pull request.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -1292,6 +1340,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "merge_pull_request",
+    operationType: "destructive",
     description: "Merge a GitHub pull request.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -1307,6 +1356,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "check_pull_request_merged",
+    operationType: "read",
     description: "Check whether a GitHub pull request has been merged.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -1320,6 +1370,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "create_commit_status",
+    operationType: "write",
     description: "Create a commit status for a GitHub commit SHA.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -1335,6 +1386,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "get_commit_statuses",
+    operationType: "read",
     description: "List statuses for a commit reference in reverse chronological order.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -1349,6 +1401,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "list_check_runs_for_ref",
+    operationType: "read",
     description: "List GitHub check runs for a commit SHA, branch, or tag.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -1369,6 +1422,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "rerequest_check_run",
+    operationType: "write",
     description: "Re-request a GitHub check run.",
     requiredScopes: githubWorkflowScopes,
     inputSchema: s.object({
@@ -1380,6 +1434,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "rerequest_check_suite",
+    operationType: "write",
     description: "Re-request a GitHub check suite.",
     requiredScopes: githubWorkflowScopes,
     inputSchema: s.object({
@@ -1391,6 +1446,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "list_repository_workflows",
+    operationType: "read",
     description: "List workflows configured in a GitHub repository.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -1405,6 +1461,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "list_workflow_runs",
+    operationType: "read",
     description: "List GitHub workflow runs for a repository.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -1427,6 +1484,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "get_workflow_run",
+    operationType: "read",
     description: "Get a GitHub workflow run by id.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -1438,6 +1496,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "list_workflow_run_jobs",
+    operationType: "read",
     description: "List jobs for a GitHub workflow run.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -1454,6 +1513,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "get_workflow_job_logs",
+    operationType: "read",
     description: "Get the tail of the plain-text logs for a completed GitHub Actions workflow job.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -1470,6 +1530,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "rerun_workflow",
+    operationType: "write",
     description: "Re-run a GitHub Actions workflow run.",
     requiredScopes: githubWorkflowScopes,
     inputSchema: s.object({
@@ -1484,6 +1545,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "list_releases",
+    operationType: "read",
     description: "List releases for a GitHub repository.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -1497,6 +1559,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "create_release",
+    operationType: "write",
     description: "Create a release in a GitHub repository.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -1515,6 +1578,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "get_release",
+    operationType: "read",
     description: "Get a GitHub release by numeric id.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -1526,6 +1590,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "get_latest_release",
+    operationType: "read",
     description: "Get the latest published release for a GitHub repository.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -1536,6 +1601,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "get_release_by_tag",
+    operationType: "read",
     description: "Get a GitHub release by tag name.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -1547,6 +1613,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "list_release_assets",
+    operationType: "read",
     description: "List assets attached to a GitHub release.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -1561,6 +1628,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "list_issue_timeline_events",
+    operationType: "read",
     description: "List timeline events for a GitHub issue.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -1575,6 +1643,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "list_issue_events",
+    operationType: "read",
     description: "List events for a GitHub issue.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -1589,6 +1658,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "list_repository_issue_events",
+    operationType: "read",
     description: "List issue events across a GitHub repository.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -1602,6 +1672,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "list_public_events",
+    operationType: "read",
     description: "List the global public GitHub event feed.",
     requiredScopes: githubUserReadScopes,
     inputSchema: s.object({
@@ -1613,6 +1684,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "list_user_public_events",
+    operationType: "read",
     description: "List public GitHub events performed by a user.",
     requiredScopes: githubUserReadScopes,
     inputSchema: s.object({
@@ -1625,6 +1697,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "list_user_received_public_events",
+    operationType: "read",
     description: "List public GitHub events received by a user.",
     requiredScopes: githubUserReadScopes,
     inputSchema: s.object({
@@ -1637,6 +1710,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "list_authenticated_user_events",
+    operationType: "read",
     description:
       "List activity events for a GitHub user and include private events when the authenticated credential belongs to that user.",
     requiredScopes: githubUserReadScopes,
@@ -1650,6 +1724,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "list_authenticated_user_received_events",
+    operationType: "read",
     description:
       "List received activity events for a GitHub user and include private events when the authenticated credential belongs to that user.",
     requiredScopes: githubUserReadScopes,
@@ -1663,6 +1738,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "list_repository_events",
+    operationType: "read",
     description: "List recent GitHub events for a repository.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -1676,6 +1752,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "list_directory_contents",
+    operationType: "read",
     description: "List entries under a repository directory path. Empty path means repository root.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -1690,6 +1767,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "get_file_contents",
+    operationType: "read",
     description: "Read a repository file and return both base64 and decoded text when available.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -1702,6 +1780,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "merge_branch",
+    operationType: "write",
     description: "Merge one branch into another in a GitHub repository.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -1715,6 +1794,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "rename_branch",
+    operationType: "destructive",
     description: "Rename a branch in a GitHub repository.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -1727,6 +1807,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "sync_fork_branch_with_upstream",
+    operationType: "write",
     description: "Sync a fork branch with its upstream branch.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -1738,6 +1819,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "search_repositories",
+    operationType: "read",
     description: "Search GitHub repositories with GitHub search syntax.",
     requiredScopes: [],
     inputSchema: s.object({
@@ -1755,6 +1837,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "search_users",
+    operationType: "read",
     description: "Search GitHub users with GitHub search syntax.",
     requiredScopes: [],
     inputSchema: s.object({
@@ -1771,6 +1854,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "search_commits",
+    operationType: "read",
     description: "Search GitHub commits by commit-message text and qualifiers.",
     requiredScopes: [],
     inputSchema: s.object({
@@ -1787,6 +1871,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "search_code",
+    operationType: "read",
     description: "Search GitHub code with GitHub search syntax.",
     requiredScopes: [],
     inputSchema: s.object({
@@ -1804,6 +1889,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "search_labels",
+    operationType: "read",
     description: "Search labels within a GitHub repository by repository id and query.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -1821,6 +1907,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "search_topics",
+    operationType: "read",
     description: "Search GitHub topics with GitHub search syntax.",
     requiredScopes: [],
     inputSchema: s.object({
@@ -1835,6 +1922,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "create_or_update_file",
+    operationType: "destructive",
     description:
       "Create or update a repository file through the GitHub contents API. Writing under .github/workflows may require GitHub workflow scope.",
     requiredScopes: githubRepoScopes,
@@ -1852,6 +1940,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "delete_file",
+    operationType: "destructive",
     description:
       "Delete a repository file through the GitHub contents API. Deleting under .github/workflows may require GitHub workflow scope.",
     requiredScopes: githubRepoScopes,
@@ -1867,6 +1956,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "update_repository",
+    operationType: "destructive",
     description: "Update settings and metadata for a GitHub repository.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -1893,6 +1983,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "fork_repository",
+    operationType: "write",
     description:
       "Fork a GitHub repository. Forking happens asynchronously, so the returned repository may not be immediately ready.",
     requiredScopes: githubRepoScopes,
@@ -1907,6 +1998,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "list_repository_forks",
+    operationType: "read",
     description: "List forks of a GitHub repository.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -1921,6 +2013,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "list_repository_tags",
+    operationType: "read",
     description: "List tags in a GitHub repository.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -1934,6 +2027,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "list_repository_languages",
+    operationType: "read",
     description: "List languages used in a GitHub repository with byte counts.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -1946,6 +2040,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "list_repository_contributors",
+    operationType: "read",
     description: "List contributors to a GitHub repository.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -1960,6 +2055,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "list_repository_topics",
+    operationType: "read",
     description: "List topics of a GitHub repository.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -1973,6 +2069,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "replace_repository_topics",
+    operationType: "destructive",
     description: "Replace all topics of a GitHub repository.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -1986,6 +2083,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "get_repository_readme",
+    operationType: "read",
     description: "Get the README of a GitHub repository and return both base64 and decoded text when available.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -1997,6 +2095,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "list_organization_repositories",
+    operationType: "read",
     description: "List repositories for a GitHub organization.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -2012,6 +2111,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "list_user_repositories",
+    operationType: "read",
     description: "List public repositories for a GitHub user.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -2027,6 +2127,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "get_user",
+    operationType: "read",
     description: "Get a GitHub user profile by username.",
     requiredScopes: [],
     inputSchema: s.object({
@@ -2036,6 +2137,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "list_repository_collaborators",
+    operationType: "read",
     description: "List collaborators of a GitHub repository.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -2051,6 +2153,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "add_repository_collaborator",
+    operationType: "write",
     description: "Add a collaborator to a GitHub repository or update their permission.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -2068,6 +2171,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "remove_repository_collaborator",
+    operationType: "destructive",
     description: "Remove a collaborator from a GitHub repository.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -2079,6 +2183,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "get_repository_permission_for_user",
+    operationType: "read",
     description: "Get the repository permission level of a GitHub user.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -2090,6 +2195,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "get_ref",
+    operationType: "read",
     description: "Get a Git reference in a GitHub repository.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -2101,6 +2207,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "list_matching_refs",
+    operationType: "read",
     description: "List Git references matching a prefix in a GitHub repository.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -2116,6 +2223,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "update_ref",
+    operationType: "destructive",
     description: "Update a Git reference in a GitHub repository.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -2129,6 +2237,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "delete_ref",
+    operationType: "destructive",
     description: "Delete a Git reference in a GitHub repository.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -2140,6 +2249,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "create_commit_comment",
+    operationType: "write",
     description: "Create a comment on a commit in a GitHub repository.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -2154,6 +2264,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "list_commit_comments",
+    operationType: "read",
     description: "List comments on a commit in a GitHub repository.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -2168,6 +2279,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "star_repository",
+    operationType: "write",
     description: "Star a GitHub repository for the authenticated user.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -2178,6 +2290,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "unstar_repository",
+    operationType: "destructive",
     description: "Unstar a GitHub repository for the authenticated user.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -2188,6 +2301,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "check_repository_starred",
+    operationType: "read",
     description: "Check whether the authenticated user has starred a GitHub repository.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -2200,6 +2314,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "list_repository_stargazers",
+    operationType: "read",
     description: "List users who starred a GitHub repository.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -2213,6 +2328,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "list_my_starred_repositories",
+    operationType: "read",
     description: "List repositories starred by the authenticated GitHub user.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -2226,6 +2342,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "list_repository_watchers",
+    operationType: "read",
     description: "List users watching a GitHub repository.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -2239,6 +2356,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "list_milestones",
+    operationType: "read",
     description: "List milestones for a GitHub repository.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -2255,6 +2373,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "get_milestone",
+    operationType: "read",
     description: "Get a GitHub milestone by number.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -2266,6 +2385,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "create_milestone",
+    operationType: "write",
     description: "Create a milestone in a GitHub repository.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -2280,6 +2400,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "update_milestone",
+    operationType: "destructive",
     description: "Update a GitHub milestone by number.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -2295,6 +2416,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "delete_milestone",
+    operationType: "destructive",
     description: "Delete a GitHub milestone by number.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -2306,6 +2428,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "get_issue_comment",
+    operationType: "read",
     description: "Get a GitHub issue comment by ID.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -2317,6 +2440,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "update_issue_comment",
+    operationType: "write",
     description: "Update a GitHub issue comment by ID.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -2329,6 +2453,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "delete_issue_comment",
+    operationType: "destructive",
     description: "Delete a GitHub issue comment by ID.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -2340,6 +2465,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "get_label",
+    operationType: "read",
     description: "Get a GitHub label by name.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -2351,6 +2477,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "update_label",
+    operationType: "write",
     description: "Update a GitHub label by name.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -2365,6 +2492,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "delete_label",
+    operationType: "destructive",
     description: "Delete a GitHub label by name.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -2376,6 +2504,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "list_assignees",
+    operationType: "read",
     description: "List available assignees for issues in a GitHub repository.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -2389,6 +2518,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "create_issue_reaction",
+    operationType: "write",
     description: "Add a reaction to a GitHub issue.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -2401,6 +2531,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "create_issue_comment_reaction",
+    operationType: "write",
     description: "Add a reaction to a GitHub issue comment.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -2413,6 +2544,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "get_pull_request_review",
+    operationType: "read",
     description: "Get a GitHub pull request review by ID.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -2425,6 +2557,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "dismiss_pull_request_review",
+    operationType: "destructive",
     description: "Dismiss a GitHub pull request review.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -2438,6 +2571,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "delete_pending_pull_request_review",
+    operationType: "destructive",
     description: "Delete a pending GitHub pull request review and return the deleted review.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -2450,6 +2584,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "update_pull_request_review_comment",
+    operationType: "write",
     description: "Update a GitHub pull request review comment by ID.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -2462,6 +2597,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "delete_pull_request_review_comment",
+    operationType: "destructive",
     description: "Delete a GitHub pull request review comment by ID.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -2473,6 +2609,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "get_workflow",
+    operationType: "read",
     description: "Get a GitHub Actions workflow by ID or file name.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -2484,6 +2621,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "dispatch_workflow",
+    operationType: "write",
     description: "Trigger a GitHub Actions workflow dispatch event.",
     requiredScopes: githubWorkflowScopes,
     inputSchema: s.object({
@@ -2499,6 +2637,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "cancel_workflow_run",
+    operationType: "destructive",
     description: "Cancel a GitHub Actions workflow run.",
     requiredScopes: githubWorkflowScopes,
     inputSchema: s.object({
@@ -2512,6 +2651,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "rerun_failed_jobs",
+    operationType: "write",
     description: "Re-run failed jobs of a GitHub Actions workflow run.",
     requiredScopes: githubWorkflowScopes,
     inputSchema: s.object({
@@ -2526,6 +2666,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "enable_workflow",
+    operationType: "write",
     description: "Enable a GitHub Actions workflow.",
     requiredScopes: githubWorkflowScopes,
     inputSchema: s.object({
@@ -2537,6 +2678,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "disable_workflow",
+    operationType: "destructive",
     description: "Disable a GitHub Actions workflow.",
     requiredScopes: githubWorkflowScopes,
     inputSchema: s.object({
@@ -2548,6 +2690,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "list_workflow_run_artifacts",
+    operationType: "read",
     description: "List artifacts for a GitHub Actions workflow run.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -2563,7 +2706,21 @@ export const githubActions: ActionDefinition[] = [
     }),
   }),
   action({
+    name: "download_workflow_artifact",
+    operationType: "read",
+    description: "Download a GitHub Actions workflow artifact ZIP into local transit-file storage.",
+    requiredScopes: githubRepoScopes,
+    inputSchema: s.object({
+      owner: nonEmptyString,
+      repo: nonEmptyString,
+      artifactId: s.integer({ minimum: 1 }),
+      fileName: s.string("Optional ZIP filename override."),
+    }),
+    outputSchema: s.object({ file: s.unknown("The stored local transit file.") }),
+  }),
+  action({
     name: "update_release",
+    operationType: "write",
     description: "Update a GitHub release by numeric id.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -2582,6 +2739,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "delete_release",
+    operationType: "destructive",
     description: "Delete a GitHub release by numeric id.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -2593,6 +2751,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "generate_release_notes",
+    operationType: "read",
     description: "Generate release notes content for a GitHub release.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -2610,6 +2769,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "get_release_asset",
+    operationType: "read",
     description: "Get a GitHub release asset by numeric id.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -2621,6 +2781,7 @@ export const githubActions: ActionDefinition[] = [
   }),
   action({
     name: "delete_release_asset",
+    operationType: "destructive",
     description: "Delete a GitHub release asset by numeric id.",
     requiredScopes: githubRepoScopes,
     inputSchema: s.object({
@@ -2634,6 +2795,7 @@ export const githubActions: ActionDefinition[] = [
 
 interface GitHubActionInput {
   name: string;
+  operationType: ActionDefinition["operationType"];
   description: string;
   requiredScopes: string[];
   inputSchema: JsonSchema;

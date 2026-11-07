@@ -1,5 +1,5 @@
 import type { TransitFileWriter } from "../../core/types.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
 import { optionalString, requiredString } from "../../core/cast.ts";
 import { ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
@@ -61,10 +61,6 @@ function resolveEapiDomains(credential: ZLibraryCredential): string[] {
     Boolean(value),
   );
   return [...new Set(configuredDomains.map((value) => normalizeEapiDomain(value, "Z-Library EAPI domain")))];
-}
-
-export function resolveEapiDomain(credential: ZLibraryCredential): string {
-  return resolveEapiDomains(credential)[0];
 }
 
 function buildEapiUrl(domain: string, path: string): string {

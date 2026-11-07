@@ -1,5 +1,5 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
 import { optionalInteger, optionalRecord, optionalString, optionalStringOrNull } from "../../core/cast.ts";
 import {
@@ -26,7 +26,6 @@ const juniperMistAllowedApiOrigins = [
   "https://api.gc5.mist.com",
   "https://api.gc7.mist.com",
 ];
-const juniperMistDefaultRequestTimeoutMs = 30_000;
 
 type JuniperMistPhase = "validate" | "execute";
 type JuniperMistQueryValue = string | number | undefined;
@@ -173,7 +172,7 @@ async function requestJuniperMistJson(input: {
   signal?: AbortSignal;
   phase: JuniperMistPhase;
 }): Promise<unknown> {
-  const timeout = createProviderTimeout(input.signal, juniperMistDefaultRequestTimeoutMs);
+  const timeout = createProviderTimeout(input.signal);
 
   try {
     const response = await input.fetcher(buildJuniperMistUrl(input), {

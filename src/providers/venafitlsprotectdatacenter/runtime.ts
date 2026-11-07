@@ -1,17 +1,19 @@
 import type { CredentialValidationResult, ProviderExecutors } from "../../core/types.ts";
-import type { ProviderFetch, ProviderRuntimeHandler } from "../provider-runtime.ts";
+import type { ProviderRuntimeHandler } from "../provider-executors.ts";
+import type { ProviderFetch } from "../provider-runtime.ts";
 
 import { createHash } from "node:crypto";
 import { optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
 import { assertPublicHttpUrl, encodePathSegment, isPrivateNetworkAccessAllowed } from "../../core/request.ts";
+import { requireCustomCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
 import {
-  defineProviderExecutors,
+  providerInputError,
   ProviderRequestError,
   providerUserAgent,
-  requireCustomCredential,
+  defaultProviderRequestTimeoutMs,
 } from "../provider-runtime.ts";
 
-const requestTimeoutMs = 30_000;
 interface Credentials {
   domain: string;
   clientId: string;
@@ -45,7 +47,7 @@ export async function validateVenafiDatacenterCredential(
 const handlers: Record<string, ProviderRuntimeHandler<VenafiDatacenterContext>> = {
   async get_certificate(input, context) {
     const token = await getAccessToken(context.credentials, context.fetcher, "execute", context.signal);
-    const id = requiredString(input.certificateId, "certificateId", invalidInput);
+    const id = requiredString(input.certificateId, "certificateId", providerInputError);
     return {
       certificate: await requestApi(
         context.credentials.domain,
@@ -82,7 +84,7 @@ const handlers: Record<string, ProviderRuntimeHandler<VenafiDatacenterContext>> 
   },
   async check_policy(input, context) {
     const token = await getAccessToken(context.credentials, context.fetcher, "execute", context.signal);
-    const policyDn = requiredString(input.policyDn, "policyDn", invalidInput);
+    const policyDn = requiredString(input.policyDn, "policyDn", providerInputError);
     return {
       policy: await requestApi(
         context.credentials.domain,
@@ -110,21 +112,21 @@ export const executors: ProviderExecutors = defineProviderExecutors<VenafiDatace
 function readCredentials(values: Record<string, string>): Credentials {
   return {
     domain: normalizeDomain(values.domain),
-    clientId: requiredString(values.clientId, "clientId", invalidInput),
-    username: requiredString(values.username, "username", invalidInput),
-    password: requiredString(values.password, "password", invalidInput),
+    clientId: requiredString(values.clientId, "clientId", providerInputError),
+    username: requiredString(values.username, "username", providerInputError),
+    password: requiredString(values.password, "password", providerInputError),
   };
 }
 
 function normalizeDomain(value: unknown) {
-  const raw = requiredString(value, "domain", invalidInput);
+  const raw = requiredString(value, "domain", providerInputError);
   const url = assertPublicHttpUrl(raw, {
     fieldName: "domain",
-    createError: invalidInput,
+    createError: providerInputError,
     allowPrivateNetwork: isPrivateNetworkAccessAllowed(),
   });
   if (url.protocol !== "https:" || url.username || url.password || url.pathname !== "/" || url.search || url.hash)
-    throw invalidInput("domain must be an HTTPS origin without credentials, query, or fragment");
+    throw providerInputError("domain must be an HTTPS origin without credentials, query, or fragment");
   return url.toString().replace(/\/$/, "");
 }
 
@@ -133,10 +135,10 @@ function normalizeCertificateListNext(value: string, domain: string) {
   try {
     url = new URL(value, domain);
   } catch {
-    throw invalidInput("next must be a valid URL");
+    throw providerInputError("next must be a valid URL");
   }
   if (url.origin !== new URL(domain).origin || url.pathname !== "/vedsdk/Certificates")
-    throw invalidInput("next must target the configured Venafi certificate list endpoint");
+    throw providerInputError("next must target the configured Venafi certificate list endpoint");
   return url.toString();
 }
 
@@ -205,7 +207,7 @@ async function guardedRequest(
       "user-agent": providerUserAgent,
       ...init.headers,
     },
-    signal: signal ?? AbortSignal.timeout(requestTimeoutMs),
+    signal: signal ?? AbortSignal.timeout(defaultProviderRequestTimeoutMs),
   });
   const text = await response.text();
   let payload: unknown = {};
@@ -232,8 +234,4 @@ async function guardedRequest(
 
 function fingerprint(value: string) {
   return createHash("sha256").update(value).digest("hex").slice(0, 16);
-}
-
-function invalidInput(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
 }

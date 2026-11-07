@@ -1,8 +1,8 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
 import { compactObject } from "../../core/cast.ts";
-import { providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+import { providerUserAgent, ProviderRequestError, providerInputError } from "../provider-runtime.ts";
 
 export const alphaVantageApiBaseUrl = "https://www.alphavantage.co";
 
@@ -622,7 +622,7 @@ function createAlphaVantageError(response: Response, payload: unknown, phase: Al
   }
 
   if (loweredMessage.includes("invalid api call")) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
 
   if (response.status === 401 || response.status === 403) {
