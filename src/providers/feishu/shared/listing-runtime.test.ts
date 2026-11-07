@@ -27,7 +27,7 @@ const fixtures: ListingFixture[] = [
   {
     action: "list_wiki_members",
     input: { spaceId: "space_1" },
-    rowField: "items",
+    rowField: "members",
     row: { member_id: "ou_1", member_type: "openid", member_role: "member" },
   },
   { action: "list_chats", input: {}, rowField: "items", row: { chat_id: "oc_1", name: "Fixture" } },
@@ -77,6 +77,11 @@ describe("Feishu and Lark listing wire failures", () => {
           hasMore: true,
           pageToken: "next",
         });
+        // A final nonempty members page must not be mistaken for omitted
+        // empty items merely because has_more is false.
+        await expect(
+          execute(fixture.action, fixture.input, { [fixture.rowField]: [fixture.row], has_more: false }, openBaseUrl),
+        ).resolves.toMatchObject({ [resultField]: [fixture.row], hasMore: false });
 
         for (const malformed of [
           {},

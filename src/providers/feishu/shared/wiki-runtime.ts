@@ -248,7 +248,9 @@ async function listMembers(input: Record<string, unknown>, request: FeishuJsonRe
       page_token: optionalString(input.pageToken),
     },
   });
-  return normalizePage(data);
+  // The official SDK's ListSpaceMemberResponseBody uses members, unlike
+  // the items arrays returned by the Wiki space/node listing endpoints.
+  return normalizePage(data, "members");
 }
 
 async function addMember(input: Record<string, unknown>, request: FeishuJsonRequest) {
@@ -280,8 +282,8 @@ async function removeMember(input: Record<string, unknown>, request: FeishuJsonR
   return { removed: true, memberId };
 }
 
-function normalizePage(data: Record<string, unknown>) {
-  const page = readFeishuResponsePage(data);
+function normalizePage(data: Record<string, unknown>, itemField = "items") {
+  const page = readFeishuResponsePage(data, itemField);
   return {
     items: page.items,
     hasMore: page.hasMore,
