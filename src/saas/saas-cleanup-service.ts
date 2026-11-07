@@ -68,12 +68,19 @@ export class SaasCleanupService {
   }
 
   private async runBatch(): Promise<void> {
+    const deadline = Date.now() + 50_000;
+    const connections = this.options.connections;
     await this.options.oauthStates?.deleteCreatedBefore(
       new Date(Date.now() - OAUTH_STATE_MAX_AGE_MS).toISOString(),
-      this.options.connections?.revokeCredential.bind(this.options.connections),
+      connections
+        ? async (service, name, credential) => {
+            if (Date.now() >= deadline || this.shutdown.signal.aborted) return "failed";
+            return connections.revokeCredential(service, name, credential);
+          }
+        : undefined,
     );
+    if (Date.now() >= deadline || this.shutdown.signal.aborted) return;
     await this.options.requests.expireSaas();
-    const deadline = Date.now() + 50_000;
     for (let count = 0; count < 10 && Date.now() < deadline && !this.shutdown.signal.aborted; count++) {
       const project = await this.options.store.getProject();
       if (!project) return;

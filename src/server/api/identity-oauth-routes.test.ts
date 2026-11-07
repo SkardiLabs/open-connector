@@ -308,6 +308,10 @@ it("keeps Slack OpenID proof separate from content and disposes only its tempora
     expect(temporary).toMatchObject({ credential: { accessToken: "identity-access" } });
     const generation = await database.connectionStore.getRetirementGeneration("slack", "link_abandoned");
     const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + OAUTH_STATE_MAX_AGE_MS + 1000);
+    const beforeFreshConsent = fetcher.mock.calls.length;
+    await start("binding_next");
+    expect(fetcher).toHaveBeenCalledTimes(beforeFreshConsent);
+    expect(await database.connectionStore.get("slack", "link_abandoned")).toEqual(temporary);
     revokePayload = { ok: true, revoked: false };
     await saasCleanup.run();
     expect(await database.connectionStore.get("slack", "link_abandoned")).toEqual(temporary);

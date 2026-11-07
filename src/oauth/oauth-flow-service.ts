@@ -141,10 +141,7 @@ export class OAuthFlowService {
     await this.saasOAuth?.assertLocalAuthorization(input.service);
     const linked = input.linkOnly ? await this.resolveLinkOnly(input) : undefined;
     const { pending, authorizationUrl } = await this.prepareAuthorization(input, linked);
-    await this.states.deleteCreatedBefore(
-      new Date(Date.now() - this.stateMaxAgeMs).toISOString(),
-      this.connections.revokeCredential.bind(this.connections),
-    );
+    await this.states.deleteCreatedBefore(new Date(Date.now() - this.stateMaxAgeMs).toISOString());
     const accepted = await this.states.set(pending);
     if (!accepted)
       throw new OAuthFlowError("invalid_input", "The temporary link alias is already reserved or retired.");

@@ -1,7 +1,11 @@
 import type { ProviderNetworkPolicy } from "../core/provider-network-policy.ts";
+import type { IOAuthStateStore } from "../oauth/oauth-flow-service.ts";
 
 import { afterEach, expect, it, vi } from "vitest";
+import { createCatalogStore } from "../catalog-store.ts";
+import { ConnectionService } from "../connection-service.ts";
 import { getProviderNetworkPolicy, withProviderNetworkPolicy } from "../core/provider-network-policy.ts";
+import { ProviderLoader } from "../providers/provider-loader.ts";
 import { AesGcmSecretCodec } from "../server/secrets/secret-codec.ts";
 import { SqliteRuntimeDatabase } from "../server/storage/sqlite/runtime-store.ts";
 import { SaasCleanupService } from "./saas-cleanup-service.ts";
@@ -262,6 +266,64 @@ it("stops and waits for in-flight cleanup before storage can be closed", async (
   await worker.run();
   expect(f.fetcher).toHaveBeenCalledOnce();
 });
+
+it.each(["deadline", "shutdown"])(
+  "stops issuing identity revocations at %s and awaits the in-flight request",
+  async (stop) => {
+    const f = await setup();
+    const connections = new ConnectionService({
+      catalog: createCatalogStore([]),
+      providerLoader: new ProviderLoader({}),
+      store: f.db.connectionStore,
+    });
+    const entered = Promise.withResolvers<void>();
+    const finish = Promise.withResolvers<void>();
+    const revoke = vi.spyOn(connections, "revokeCredential").mockImplementation(async () => {
+      entered.resolve();
+      await finish.promise;
+      if (stop === "deadline") f.advance(50_000);
+      return "done";
+    });
+    const expire = vi.spyOn(f.db.connectionRequestStore, "expireSaas");
+    const unsent: unknown[] = [];
+    const oauthStates: IOAuthStateStore = {
+      async deleteCreatedBefore(_cutoff, dispose) {
+        await dispose?.("example", "link_first", undefined);
+        unsent.push(await dispose?.("example", "link_second", undefined));
+      },
+      async set() {
+        return true;
+      },
+      async take() {
+        return undefined;
+      },
+    };
+    const worker = new SaasCleanupService({
+      store: f.db.saasProjectStore,
+      requests: f.db.connectionRequestStore,
+      oauthStates,
+      connections,
+    });
+    workers.push(worker);
+    const pending = worker.run();
+    await entered.promise;
+    let closed = false;
+    const closing =
+      stop === "shutdown"
+        ? worker.close().then(() => {
+            closed = true;
+          })
+        : undefined;
+    await Promise.resolve();
+    expect(closed).toBe(false);
+    finish.resolve();
+    await pending;
+    await closing;
+    expect(revoke).toHaveBeenCalledOnce();
+    expect(unsent).toEqual(["failed"]);
+    expect(expire).not.toHaveBeenCalled();
+  },
+);
 
 it("continues running on the Node timer without requests and stops scheduling on close", async () => {
   const f = await setup();
