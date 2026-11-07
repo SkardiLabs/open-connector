@@ -21,7 +21,10 @@ export class SqlOAuthStateStore implements IOAuthStateStore {
     this.codec = codec;
   }
 
-  async deleteCreatedBefore(cutoff: string): Promise<void> {
+  async deleteCreatedBefore(
+    cutoff: string,
+    revoke?: Parameters<IOAuthStateStore["deleteCreatedBefore"]>[1],
+  ): Promise<void> {
     const [rows] = await this.transaction([
       {
         sql: "select state, value from oauth_states where created_at < ? order by created_at limit 100",
@@ -31,18 +34,32 @@ export class SqlOAuthStateStore implements IOAuthStateStore {
     for (const row of rows) {
       const expired = JSON.parse(await this.codec.decode(row.value as string)) as OAuthAuthorizationState;
       if (expired.linkOnly) {
+        const connections = new SqlConnectionStore(this.transaction, this.codec);
+        const name = normalizeConnectionName(expired.connectionName);
+        const stored = await connections.get(expired.service, name);
+        if (stored?.source !== "saas" && stored?.credential.authType === "oauth2") {
+          const authorization = expired.state.startsWith("cleanup:")
+            ? expired.state.slice("cleanup:".length)
+            : expired.state;
+          // A retained cleanup row is also the retry owner for its own token.
+          // Never dispose a replacement grant, or discard an unconfirmed one.
+          if (
+            !revoke ||
+            stored.credential.metadata.linkOnly === undefined ||
+            stored.credential.metadata.oauthAuthorizationId !== authorization ||
+            (await revoke(expired.service, name, stored.credential)) === "failed"
+          ) {
+            continue;
+          }
+        }
         // Same fence as explicit disconnect: an in-flight callback cannot
         // publish after this deletion, including across process restarts.
-        await new SqlConnectionStore(this.transaction, this.codec).delete(
-          expired.service,
-          normalizeConnectionName(expired.connectionName),
-          {
-            state: row.state as string,
-            value: row.value as string,
-            cutoff,
-            retirementGeneration: expired.retirementGeneration,
-          },
-        );
+        await connections.delete(expired.service, name, {
+          state: row.state as string,
+          value: row.value as string,
+          cutoff,
+          retirementGeneration: expired.retirementGeneration,
+        });
       } else {
         await this.transaction([
           { sql: "delete from oauth_states where state = ? and created_at < ?", values: [row.state as string, cutoff] },

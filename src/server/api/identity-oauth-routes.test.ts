@@ -1,5 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { createCatalogStore } from "../../catalog-store.ts";
+import { OAUTH_STATE_MAX_AGE_MS } from "../../oauth/oauth-flow-service.ts";
 import { provider as dropbox } from "../../providers/dropbox/definition.ts";
 import { ProviderLoader } from "../../providers/provider-loader.ts";
 import { provider as slack } from "../../providers/slack/definition.ts";
@@ -8,7 +9,10 @@ import { TransitFileService } from "../files/transit-files.ts";
 import { AesGcmSecretCodec } from "../secrets/secret-codec.ts";
 import { SqliteRuntimeDatabase } from "../storage/sqlite/runtime-store.ts";
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
 
 // Authored provider responses exercise the real HTTP routes and OAuth lifecycle.
 it.each([200, 503])("revokes only a temporary Dropbox identity token (provider status %s)", async (revokeStatus) => {
@@ -147,8 +151,15 @@ it.each([200, 503])("revokes only a temporary Dropbox identity token (provider s
 });
 
 it("keeps Slack OpenID proof separate from content and disposes only its temporary grant", async () => {
+  const query = "?tenant=acme";
   const database = new SqliteRuntimeDatabase(":memory:");
-  const userInfo = { ok: true, sub: "U456", "https://slack.com/user_id": "U456", "https://slack.com/team_id": "T123" };
+  const redirectUri = `https://connector.example/oauth/callback${query}`;
+  const userInfo = {
+    ok: true,
+    sub: "U456",
+    "https://slack.com/user_id": "U456",
+    "https://slack.com/team_id": "T123",
+  };
   let identityPayload: unknown = userInfo;
   let identityToken = { ok: true, access_token: "identity-access", token_type: "Bearer" };
   let revokePayload: unknown = { ok: true, revoked: true };
@@ -157,6 +168,7 @@ it("keeps Slack OpenID proof separate from content and disposes only its tempora
       service: "slack",
       clientId: "installed-app",
       clientSecret: "app-secret",
+      redirectUri,
       extra: {},
       secretExtra: {},
     });
@@ -165,7 +177,11 @@ it("keeps Slack OpenID proof separate from content and disposes only its tempora
       const bearer = new Headers(init?.headers).get("authorization");
       if (url === "https://slack.com/api/oauth.v2.user.access") {
         expect((init!.body as URLSearchParams).get("code")).toBe("source-code");
-        return Response.json({ access_token: "source-access", token_type: "user", scope: "channels:read,users:read" });
+        return Response.json({
+          access_token: "source-access",
+          token_type: "user",
+          scope: "channels:read,users:read",
+        });
       }
       if (url === "https://slack.com/api/auth.test") {
         expect(bearer).toBe("Bearer source-access");
@@ -173,7 +189,7 @@ it("keeps Slack OpenID proof separate from content and disposes only its tempora
       }
       if (url === "https://slack.com/api/openid.connect.token") {
         const body = init!.body as URLSearchParams;
-        expect(body.get("redirect_uri")).toBe("https://connector.example/oauth/callback");
+        expect(body.get("redirect_uri")).toBe(redirectUri);
         expect(body.get("client_id")).toBe("installed-app");
         return Response.json(identityToken);
       }
@@ -190,7 +206,7 @@ it("keeps Slack OpenID proof separate from content and disposes only its tempora
       return Response.json(revokePayload);
     });
     vi.stubGlobal("fetch", fetcher);
-    const { app } = await createConnectApp({
+    const { app, saasCleanup } = await createConnectApp({
       catalog: createCatalogStore([slack], { executableActionIds: ["slack.get_current_user"] }),
       runtimeDatabase: database,
       providerLoader: new ProviderLoader({ slack: () => import("../../providers/slack/executors.ts") }),
@@ -235,14 +251,16 @@ it("keeps Slack OpenID proof separate from content and disposes only its tempora
       returnUri: "https://gateway.example/links/callback",
       returnState: "signed-state",
     };
-    const refused = await request("/api/oauth/authorizations", "POST", {
-      service: "slack",
-      connectionName: "link_mixed",
-      linkOnly: { ...linkOnly, requestedScopes: ["openid", "channels:read"] },
-    });
-    expect(refused.status).toBe(400);
+    for (const requestedScopes of [["openid", "channels:read"], ["email"]]) {
+      const refused = await request("/api/oauth/authorizations", "POST", {
+        service: "slack",
+        connectionName: "link_invalid_scopes",
+        linkOnly: { ...linkOnly, requestedScopes },
+      });
+      expect(refused.status).toBe(400);
+    }
     const complete = (state: string) =>
-      app.request("/oauth/callback", {
+      app.request(`/oauth/callback${query}`, {
         method: "POST",
         headers: { "content-type": "application/x-www-form-urlencoded" },
         body: new URLSearchParams({ state, code: "identity-code" }),
@@ -281,6 +299,25 @@ it("keeps Slack OpenID proof separate from content and disposes only its tempora
       expect(await database.connectionStore.get("slack", name)).toBeUndefined();
       expect(await database.connectionStore.get("slack", "binding_source")).toEqual(installed);
     }
+    // A consumer that loses the callback response leaves the existing cleanup
+    // marker. Expiry must retry disposal without losing its only credential.
+    const abandoned = await start("link_abandoned", { ...linkOnly, requestedScopes: ["openid"] });
+    expect(new URL(abandoned.authorizationUrl).searchParams.get("scope")).toBe("openid");
+    expect((await complete(abandoned.state)).status).toBe(302);
+    const temporary = await database.connectionStore.get("slack", "link_abandoned");
+    expect(temporary).toMatchObject({ credential: { accessToken: "identity-access" } });
+    const generation = await database.connectionStore.getRetirementGeneration("slack", "link_abandoned");
+    const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + OAUTH_STATE_MAX_AGE_MS + 1000);
+    revokePayload = { ok: true, revoked: false };
+    await saasCleanup.run();
+    expect(await database.connectionStore.get("slack", "link_abandoned")).toEqual(temporary);
+    expect(await database.connectionStore.getRetirementGeneration("slack", "link_abandoned")).toBe(generation);
+    revokePayload = { ok: true, revoked: true };
+    await saasCleanup.run();
+    expect(await database.connectionStore.get("slack", "link_abandoned")).toBeUndefined();
+    expect(await database.oauthStateStore.take(`cleanup:${abandoned.state}`)).toBeUndefined();
+    expect(await database.connectionStore.get("slack", "binding_source")).toEqual(installed);
+    clock.mockRestore();
     revokePayload = { ok: true, revoked: true };
     for (const [index, payload] of [
       { ...userInfo, sub: "U999" },

@@ -102,8 +102,8 @@ export interface OAuthFlowServiceOptions {
  * Storage contract for pending OAuth authorization states.
  */
 export interface IOAuthStateStore {
-  /** Deletes states whose creation timestamp is earlier than the cutoff. */
-  deleteCreatedBefore(cutoff: string): Promise<void>;
+  /** Retire expired states, retaining temporary credentials until disposal is confirmed. */
+  deleteCreatedBefore(cutoff: string, revoke?: ConnectionService["revokeCredential"]): Promise<void>;
   /** False when retirement superseded the state or a temporary alias is already occupied. */
   set(state: OAuthAuthorizationState): Promise<boolean>;
   take(state: string): Promise<OAuthAuthorizationState | undefined>;
@@ -141,7 +141,10 @@ export class OAuthFlowService {
     await this.saasOAuth?.assertLocalAuthorization(input.service);
     const linked = input.linkOnly ? await this.resolveLinkOnly(input) : undefined;
     const { pending, authorizationUrl } = await this.prepareAuthorization(input, linked);
-    await this.states.deleteCreatedBefore(new Date(Date.now() - this.stateMaxAgeMs).toISOString());
+    await this.states.deleteCreatedBefore(
+      new Date(Date.now() - this.stateMaxAgeMs).toISOString(),
+      this.connections.revokeCredential.bind(this.connections),
+    );
     const accepted = await this.states.set(pending);
     if (!accepted)
       throw new OAuthFlowError("invalid_input", "The temporary link alias is already reserved or retired.");
@@ -178,6 +181,9 @@ export class OAuthFlowService {
     const auth = this.clientConfigs.getOAuthDefinition(input.service);
     if (!link.requestedScopes.length || link.requestedScopes.some((scope) => !auth.identityScopes?.includes(scope))) {
       throw new OAuthFlowError("invalid_input", "Only catalog-declared identity scopes are allowed for links.");
+    }
+    if (auth.requiredIdentityScopes?.some((scope) => !link.requestedScopes.includes(scope))) {
+      throw new OAuthFlowError("invalid_input", "Required identity scopes are missing.");
     }
     if (!this.secretCodec?.encrypted) {
       throw new OAuthFlowError("oauth_custom_app_encryption_required", "Installed-app links require encrypted state.");

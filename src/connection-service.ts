@@ -611,11 +611,11 @@ export class ConnectionService {
   }
 
   /**
-   * End a deleted or rejected credential's grant at the provider.
-   * Best effort by design: a provider that refuses or cannot be reached is
-   * logged, and the connection the caller asked to remove is gone either way.
+   * End a credential's grant using its provider's declared revocation contract.
+   * The caller owns local deletion: explicit disconnect is best effort, while
+   * temporary-identity expiry keeps the credential when disposal fails.
    */
-  private async revokeCredential(
+  async revokeCredential(
     service: string,
     connectionName: string,
     credential: ResolvedCredential | undefined,

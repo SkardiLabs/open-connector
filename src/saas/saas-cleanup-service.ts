@@ -1,3 +1,4 @@
+import type { ConnectionService } from "../connection-service.ts";
 import type { RuntimeExecutionOptions } from "../core/runtime-execution.ts";
 import type { RuntimeLogger } from "../core/types.ts";
 import type { IOAuthStateStore } from "../oauth/oauth-flow-service.ts";
@@ -12,6 +13,7 @@ export interface SaasCleanupServiceOptions extends RuntimeExecutionOptions {
   store: SaasProjectStore;
   requests: ConnectionRequestStore;
   oauthStates?: IOAuthStateStore;
+  connections?: ConnectionService;
   client?: SaasClient;
   logger?: RuntimeLogger;
 }
@@ -66,7 +68,10 @@ export class SaasCleanupService {
   }
 
   private async runBatch(): Promise<void> {
-    await this.options.oauthStates?.deleteCreatedBefore(new Date(Date.now() - OAUTH_STATE_MAX_AGE_MS).toISOString());
+    await this.options.oauthStates?.deleteCreatedBefore(
+      new Date(Date.now() - OAUTH_STATE_MAX_AGE_MS).toISOString(),
+      this.options.connections?.revokeCredential.bind(this.options.connections),
+    );
     await this.options.requests.expireSaas();
     const deadline = Date.now() + 50_000;
     for (let count = 0; count < 10 && Date.now() < deadline && !this.shutdown.signal.aborted; count++) {

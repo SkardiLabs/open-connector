@@ -146,6 +146,8 @@ export type OAuth2AuthDefinition = {
   scopes: string[];
   /** Scopes permitted for a temporary identity proof; never content defaults. */
   identityScopes?: string[];
+  /** Identity scopes that every temporary proof must request. */
+  requiredIdentityScopes?: string[];
   /** Authorization parameters overriding content-consent defaults for a temporary identity proof only. */
   identityAuthorizationParams?: Record<string, string>;
   /** Alternate consent endpoint used only by the existing temporary identity flow. */

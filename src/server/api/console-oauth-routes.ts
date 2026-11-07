@@ -417,13 +417,13 @@ export function createConsoleOAuthRoutes({
       if (
         context.req.header("content-type")?.split(";", 1)[0]?.trim().toLowerCase() !==
           "application/x-www-form-urlencoded" ||
-        callbackUrl.search
+        ["code", "state", "error", "error_description"].some((key) => callbackUrl.searchParams.has(key))
       ) {
         return jsonError(
           context,
           400,
           "invalid_oauth_callback",
-          "OAuth callback requires a form body without query parameters.",
+          "OAuth callback requires a form body with response parameters only in that body.",
         );
       }
       parameters = new URLSearchParams(await context.req.text());
