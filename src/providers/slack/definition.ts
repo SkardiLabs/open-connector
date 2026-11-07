@@ -178,6 +178,7 @@ export const provider: ProviderDefinition = {
       tokenEndpointAuthMethod: "client_secret_post",
       authorizationOptions: slackAuthorizationOptions,
       identityScopes: slackIdentityScopes,
+      requiredIdentityScopes: ["openid"],
       identityAuthorizationUrl: "https://slack.com/openid/connect/authorize",
       identityTokenUrl: "https://slack.com/api/openid.connect.token",
       identityScopeSeparator: " ",

@@ -152,6 +152,7 @@ export async function createConnectApp(options: ConnectAppOptions): Promise<Conn
       store: options.runtimeDatabase.saasProjectStore,
       requests: options.runtimeDatabase.connectionRequestStore,
       oauthStates: options.runtimeDatabase.oauthStateStore,
+      connections,
       client: saasClient,
       logger: options.logger,
     }),

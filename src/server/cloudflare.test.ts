@@ -11,6 +11,7 @@ import type { CloudflareEnv } from "./cloudflare/cloudflare-env.ts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { getProviderNetworkPolicy } from "../core/provider-network-policy.ts";
 import { MarketplaceService } from "../marketplace/marketplace-service.ts";
+import { OAuthCredentialRefreshService } from "../oauth/oauth-credential-refresh-service.ts";
 import worker from "./cloudflare.ts";
 import { createWorkerSecretCodec } from "./secrets/worker-secret-codec.ts";
 import { D1RuntimeDatabase } from "./storage/d1/runtime-store.ts";
@@ -462,6 +463,32 @@ it("processes scheduled cleanup without an HTTP request, public origin or asset 
     profile: { accountId: "user", displayName: "User", grantedScopes: [] },
   });
   await database.connectionRequestStore.cancelSaas(lease.pending.connectionRequestId, "admin");
+  const temporaryName = "link_scheduled";
+  const linkOnly = {
+    clientFromConnection: "binding_original",
+    connectionAlias: "original",
+    connectionVersionId: "version",
+    requestedScopes: ["identity"],
+    returnUri: "https://gateway.example/links/callback",
+    returnState: "signed-state",
+  };
+  await database.oauthStateStore.set({
+    state: `cleanup:${temporaryName}`,
+    cleanupOnly: true,
+    service: "example",
+    connectionName: temporaryName,
+    retirementGeneration: await database.connectionStore.getRetirementGeneration("example", temporaryName),
+    createdAt: "2026-01-01T00:00:00.000Z",
+    linkOnly,
+  });
+  await database.connectionStore.set("example", temporaryName, {
+    authType: "oauth2",
+    accessToken: "temporary-identity-token",
+    tokenType: "Bearer",
+    profile: { accountId: "user", displayName: "User", grantedScopes: ["identity"] },
+    metadata: { linkOnly, oauthAuthorizationId: temporaryName },
+  });
+  const revoke = vi.spyOn(OAuthCredentialRefreshService.prototype, "revoke").mockResolvedValue("done");
   const fetcher = vi.fn<typeof fetch>(async () =>
     Response.json({ success: true, data: { connectedAccountId: "account", deleted: true } }),
   );
@@ -483,8 +510,34 @@ it("processes scheduled cleanup without an HTTP request, public origin or asset 
     expect(fetcher).toHaveBeenCalledOnce();
     expect(fetcher.mock.calls[0][1]?.method).toBe("DELETE");
     expect(await database.saasProjectStore.getCleanupStats()).toMatchObject({ pending: 0, manual: 0 });
+    expect(revoke).not.toHaveBeenCalled();
+    expect(await database.connectionStore.get("example", temporaryName)).toBeDefined();
+    // With catalog assets, scheduled cleanup must use the configured app's
+    // revocation owner rather than constructing an ownerless second service.
+    await worker.scheduled(
+      {},
+      {
+        DB: binding,
+        TRANSIT_FILES: new UnusedR2Bucket(),
+        OOMOL_CONNECT_ENCRYPTION_KEY: "scheduled-key",
+        ASSETS: memoryAssets(chunkedCatalog()),
+      },
+      {
+        waitUntil(promise) {
+          pending.push(promise);
+        },
+        passThroughOnException() {},
+      },
+    );
+    await Promise.all(pending);
+    expect(revoke).toHaveBeenCalledExactlyOnceWith(
+      "example",
+      expect.objectContaining({ accessToken: "temporary-identity-token" }),
+    );
+    expect(await database.connectionStore.get("example", temporaryName)).toBeUndefined();
   } finally {
     binding.close();
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
   }
 });

@@ -39,22 +39,26 @@ export default {
     const database = new D1RuntimeDatabase(env.DB, {
       secretCodec: await createSecretCodec(env.OOMOL_CONNECT_ENCRYPTION_KEY),
     });
-    const cleanup = new SaasCleanupService({
-      network: {
-        allowPrivateNetwork: parsePrivateNetworkAccessFlag(env.OOMOL_CONNECT_ALLOW_PRIVATE_NETWORK),
-        trustedHosts: parseEgressTrustedHosts(env.OOMOL_CONNECT_EGRESS_TRUSTED_HOSTS),
-      },
-      store: database.saasProjectStore,
-      requests: database.connectionRequestStore,
-      oauthStates: database.oauthStateStore,
-      logger: workerLogger,
-    });
+    const origin = env.OOMOL_CONNECT_ORIGIN ?? "https://connector.invalid";
+    const configured = env.ASSETS
+      ? await appCache.get(createCacheKey(env, origin), () => createCloudflareApp(env, origin))
+      : undefined;
+    const cleanup =
+      configured?.saasCleanup ??
+      new SaasCleanupService({
+        network: {
+          allowPrivateNetwork: parsePrivateNetworkAccessFlag(env.OOMOL_CONNECT_ALLOW_PRIVATE_NETWORK),
+          trustedHosts: parseEgressTrustedHosts(env.OOMOL_CONNECT_EGRESS_TRUSTED_HOSTS),
+        },
+        store: database.saasProjectStore,
+        requests: database.connectionRequestStore,
+        oauthStates: database.oauthStateStore,
+        logger: workerLogger,
+      });
     const triggerCleanup = async () => {
       if (!(await database.triggerStore.listFlowTriggersForMaintenance(Date.now(), 1)).length) return;
-      const origin = env.OOMOL_CONNECT_ORIGIN ?? "https://connector.invalid";
-      const { triggerMaintenance } = await appCache.get(createCacheKey(env, origin), () =>
-        createCloudflareApp(env, origin),
-      );
+      const { triggerMaintenance } =
+        configured ?? (await appCache.get(createCacheKey(env, origin), () => createCloudflareApp(env, origin)));
       await triggerMaintenance.run();
     };
     ctx.waitUntil(Promise.all([cleanup.run(), triggerCleanup()]).then(() => undefined));
