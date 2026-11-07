@@ -2,7 +2,7 @@ import type { FeishuJsonRequest } from "./client.ts";
 
 import { optionalBoolean, optionalNumber } from "../../../core/cast.ts";
 import { providerInputError } from "../../provider-runtime.ts";
-import { requireFeishuResponseString } from "./response.ts";
+import { readFeishuResponsePage, requireFeishuResponseString } from "./response.ts";
 
 interface WikiActionHandler {
   (input: Record<string, unknown>): Promise<unknown>;
@@ -281,20 +281,12 @@ async function removeMember(input: Record<string, unknown>, request: FeishuJsonR
 }
 
 function normalizePage(data: Record<string, unknown>) {
-  const hasMore = data.has_more === true;
+  const page = readFeishuResponsePage(data);
   return {
-    items: recordArray(data.items),
-    hasMore,
-    pageToken: hasMore ? (optionalString(data.page_token) ?? null) : null,
+    items: page.items,
+    hasMore: page.hasMore,
+    pageToken: page.hasMore ? (page.pageToken ?? null) : null,
   };
-}
-
-function recordArray(value: unknown): Record<string, unknown>[] {
-  return Array.isArray(value)
-    ? value.filter(
-        (item): item is Record<string, unknown> => typeof item === "object" && item !== null && !Array.isArray(item),
-      )
-    : [];
 }
 
 function recordValue(value: unknown): Record<string, unknown> {
