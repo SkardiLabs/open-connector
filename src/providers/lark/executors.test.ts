@@ -33,7 +33,7 @@ async function fetchedUrls(
     "fetch",
     vi.fn(async (url: RequestInfo | URL) => {
       urls.push(url.toString());
-      return envelope({ open_id: "ou_1", name: "User", items: [], has_more: false });
+      return envelope({ open_id: "ou_1", name: "User", items: [], files: [], has_more: false });
     }),
   );
   const context: ExecutionContext = { getCredential: async () => oauthCredential() };
