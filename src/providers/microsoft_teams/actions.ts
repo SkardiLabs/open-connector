@@ -3,13 +3,17 @@ import type { ActionDefinition, JsonSchema } from "../../core/types.ts";
 import { s } from "../../core/json-schema.ts";
 import { defineProviderAction } from "../../core/provider-definition.ts";
 import {
+  microsoftTeamsAiInsightReadScopes,
+  microsoftTeamsCalendarReadScopes,
   microsoftTeamsChannelMessageReadScopes,
   microsoftTeamsChannelMessageSendScopes,
   microsoftTeamsChannelScopes,
   microsoftTeamsChatMessageSendScopes,
   microsoftTeamsChatReadScopes,
+  microsoftTeamsOnlineMeetingReadScopes,
   microsoftTeamsProfileScopes,
   microsoftTeamsTeamScopes,
+  microsoftTeamsTranscriptReadScopes,
 } from "./scopes.ts";
 
 const service = "microsoft_teams";
@@ -134,6 +138,125 @@ const messageWriteFields = {
   attachments: s.array(attachment, { description: "Message attachments." }),
   mentions: s.array(mention, { description: "Message mentions matching body markup." }),
 };
+
+const onlineMeetingId = s.nonEmptyString("Microsoft Graph online meeting ID.");
+const dateTimeTimeZone = s.looseObject(
+  {
+    dateTime: s.string("Date and time, in the timeZone below."),
+    timeZone: s.string("Time zone of dateTime; UTC for this provider's calendar reads."),
+  },
+  { description: "Microsoft Graph dateTimeTimeZone value." },
+);
+const emailAddress = s.looseObject(
+  {
+    name: s.string("Display name."),
+    address: s.string("Email address."),
+  },
+  { description: "Microsoft Graph email address." },
+);
+const calendarEvent = s.looseObject(
+  {
+    id: s.nonEmptyString("Event ID. calendarView expands recurring meetings, so each occurrence has its own ID."),
+    iCalUId: s.string("Event ID shared by every calendar holding the event, and by every occurrence of a series."),
+    subject: s.nullableString("Event subject."),
+    start: dateTimeTimeZone,
+    end: dateTimeTimeZone,
+    isOnlineMeeting: s.boolean("Whether the event carries online meeting details."),
+    onlineMeeting: s.nullable(
+      s.looseObject(
+        { joinUrl: s.nullableString("Join URL of the online meeting.") },
+        { description: "Online meeting details of the event." },
+      ),
+    ),
+    seriesMasterId: s.nullableString("ID of the series master for an occurrence, or null for a single event."),
+    organizer: s.looseObject({ emailAddress }, { description: "Event organizer." }),
+    attendees: s.array(
+      s.looseObject(
+        {
+          type: s.string("required, optional, or resource."),
+          emailAddress,
+          status: rawObject,
+        },
+        { description: "Event attendee." },
+      ),
+      { description: "Event attendees." },
+    ),
+  },
+  { description: "Microsoft Graph calendar event, limited to the fields meeting records need." },
+);
+const onlineMeeting = s.looseObject(
+  {
+    id: s.nonEmptyString("Online meeting ID."),
+    joinWebUrl: s.nullableString("Join URL of the online meeting."),
+    subject: s.nullableString("Meeting subject."),
+    startDateTime: s.nullableString("Scheduled start time."),
+    endDateTime: s.nullableString("Scheduled end time."),
+  },
+  { description: "Microsoft Graph online meeting resource." },
+);
+const transcript = s.looseObject(
+  {
+    id: s.nonEmptyString("Transcript ID."),
+    meetingId: s.string("Online meeting ID."),
+    createdDateTime: s.string("Time the transcript was created."),
+    endDateTime: s.nullableString("Time the transcript ended."),
+    transcriptContentUrl: s.string("Graph URL of the transcript content."),
+  },
+  { description: "Microsoft Graph call transcript metadata." },
+);
+const aiInsight = s.object(
+  {
+    id: s.nonEmptyString("AI insight ID."),
+    callId: s.nullableString("ID of the call the insight was generated for."),
+    contentCorrelationId: s.nullableString(
+      "ID that correlates the insight with the meeting's recording and transcript.",
+    ),
+    createdDateTime: s.nullableString("Time the insight was created."),
+    endDateTime: s.nullableString("Time the insight ended."),
+    meetingNotes: s.array(
+      s.object(
+        {
+          title: s.nullableString("Note title."),
+          text: s.nullableString("Note text."),
+          subpoints: s.array(
+            s.object(
+              { title: s.nullableString("Subpoint title."), text: s.nullableString("Subpoint text.") },
+              { required: ["title", "text"], description: "Meeting note subpoint." },
+            ),
+            { description: "Subpoints of the note." },
+          ),
+        },
+        { required: ["title", "text", "subpoints"], description: "Meeting note." },
+      ),
+      { description: "AI-generated meeting notes." },
+    ),
+    actionItems: s.array(
+      s.object(
+        {
+          title: s.nullableString("Action item title."),
+          text: s.nullableString("Action item text."),
+          ownerDisplayName: s.nullableString("Display name of the person the action item is assigned to."),
+        },
+        { required: ["title", "text", "ownerDisplayName"], description: "Meeting action item." },
+      ),
+      { description: "AI-generated action items." },
+    ),
+    viewpoint: s.nullable(rawObject),
+  },
+  {
+    required: [
+      "id",
+      "callId",
+      "contentCorrelationId",
+      "createdDateTime",
+      "endDateTime",
+      "meetingNotes",
+      "actionItems",
+      "viewpoint",
+    ],
+    description: "Microsoft Graph Copilot AI insight of one meeting.",
+  },
+);
 
 function input(properties: Record<string, JsonSchema>, required: string[] = []): JsonSchema {
   return s.actionInput(properties, required, "Microsoft Teams action input.");
@@ -263,6 +386,72 @@ const actions: MicrosoftTeamsActionSource[] = [
     microsoftTeamsChatMessageSendScopes,
     input({ chatId, ...messageWriteFields }, ["chatId", "body"]),
     message,
+  ),
+  action(
+    "list_calendar_view",
+    "read",
+    "List the connected account's calendar events between two times, recurring meetings expanded into occurrences, with the fields needed to find each Teams meeting. Times in the result are UTC.",
+    microsoftTeamsCalendarReadScopes,
+    input(
+      {
+        startDateTime: s.dateTime("Window start, ISO 8601, such as 2026-11-01T00:00:00Z."),
+        endDateTime: s.dateTime("Window end, ISO 8601, such as 2026-11-08T00:00:00Z."),
+        top: s.integer("Events per page.", { minimum: 1, maximum: 1000 }),
+        nextLink,
+      },
+      ["startDateTime", "endDateTime"],
+    ),
+    paginated("events", calendarEvent),
+  ),
+  action(
+    "get_online_meeting_by_join_url",
+    "read",
+    "Find the connected account's online meeting by its join URL, such as a calendar event's onlineMeeting.joinUrl. Returns null when no meeting matches.",
+    microsoftTeamsOnlineMeetingReadScopes,
+    input({ joinUrl: s.url("Join URL of the Teams meeting.") }, ["joinUrl"]),
+    s.object(
+      { onlineMeeting: s.nullable(onlineMeeting) },
+      { required: ["onlineMeeting"], description: "The matching online meeting." },
+    ),
+  ),
+  action(
+    "list_meeting_transcripts",
+    "read",
+    "List the transcripts of one online meeting the connected account can read. Needs tenant administrator consent.",
+    microsoftTeamsTranscriptReadScopes,
+    input({ onlineMeetingId, nextLink }, ["onlineMeetingId"]),
+    paginated("transcripts", transcript),
+  ),
+  action(
+    "get_transcript_content",
+    "read",
+    "Read one meeting transcript as WebVTT text with speaker names. Needs tenant administrator consent.",
+    microsoftTeamsTranscriptReadScopes,
+    input({ onlineMeetingId, transcriptId: s.nonEmptyString("Transcript ID.") }, ["onlineMeetingId", "transcriptId"]),
+    s.object(
+      {
+        contentType: s.literal("text/vtt", { description: "Media type of content." }),
+        content: s.string("Transcript text in WebVTT, with <v Speaker> voice tags."),
+      },
+      { required: ["contentType", "content"], description: "Transcript content." },
+    ),
+  ),
+  action(
+    "list_meeting_ai_insights",
+    "read",
+    "List the Microsoft 365 Copilot AI insights of one online meeting, each with its meeting notes and action items. Needs tenant administrator consent and a Copilot license for the user.",
+    microsoftTeamsAiInsightReadScopes,
+    input(
+      {
+        onlineMeetingId,
+        userId: s.nonEmptyString(
+          "Microsoft Entra object ID of the user whose view of the meeting to read. Defaults to the connected account.",
+        ),
+        nextLink,
+      },
+      ["onlineMeetingId"],
+    ),
+    paginated("insights", aiInsight),
   ),
 ];
 

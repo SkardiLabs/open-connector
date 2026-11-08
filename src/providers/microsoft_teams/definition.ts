@@ -1,7 +1,7 @@
 import type { ProviderDefinition } from "../../core/types.ts";
 
 import { microsoftTeamsActions } from "./actions.ts";
-import { microsoftTeamsOAuthScopes } from "./scopes.ts";
+import { microsoftTeamsMeetingOptionalScopes, microsoftTeamsOAuthScopes } from "./scopes.ts";
 
 /**
  * Microsoft Teams provider backed by Microsoft Graph collaboration APIs.
@@ -18,6 +18,7 @@ export const provider: ProviderDefinition = {
       authorizationUrl: "https://login.microsoftonline.com/{tenant}/oauth2/v2.0/authorize",
       tokenUrl: "https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token",
       scopes: microsoftTeamsOAuthScopes,
+      optionalScopes: microsoftTeamsMeetingOptionalScopes,
       tokenEndpointAuthMethod: "client_secret_post",
       pkce: { method: "S256" },
       authorizationParams: { response_mode: "query" },
@@ -38,6 +39,7 @@ export const provider: ProviderDefinition = {
         steps: [
           "Register a multitenant web application in Microsoft Entra ID and add the callback URL shown by this runtime.",
           "Add the Microsoft Graph delegated permissions listed by this provider; ChannelMessage.Read.All requires tenant administrator consent.",
+          "To read meeting records, also add Calendars.Read, OnlineMeetings.Read, OnlineMeetingTranscript.Read.All, and OnlineMeetingAiInsight.Read.All; the last two require tenant administrator consent, and AI insights require a Microsoft 365 Copilot license for every user.",
           "Create a client secret and save its value with the application client ID in this runtime.",
         ],
       },
