@@ -301,6 +301,10 @@ export const slackActions: ActionDefinition[] = [
         teamId: s.nonEmptyString("The Slack workspace ID."),
         userId: userIdSchema,
         isBot: s.boolean({ description: "Whether auth.test identifies this credential with a bot_id." }),
+        userName: s.string({
+          description:
+            "A name to show for the user: the OpenID name or email, or the auth.test handle. Display only, never an identity key; absent when Slack gives none.",
+        }),
       },
       { required: ["teamId", "userId", "isBot"] },
     ),

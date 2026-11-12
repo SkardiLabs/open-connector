@@ -762,7 +762,7 @@ describe("Slack current credential identity", () => {
         expect(init?.body).toBeUndefined();
         const token = credential.authType === "oauth2" ? credential.accessToken : credential.apiKey;
         expect(new Headers(init?.headers).get("authorization")).toBe(`Bearer ${token}`);
-        return Response.json({ ok: true, team_id: "T024BE7LD", user_id: "U024BE7LH", bot_id: botId });
+        return Response.json({ ok: true, team_id: "T024BE7LD", user_id: "U024BE7LH", user: "boyang", bot_id: botId });
       }),
     );
     await expect(
@@ -777,8 +777,19 @@ describe("Slack current credential identity", () => {
       ),
     ).resolves.toMatchObject({
       ok: true,
-      output: { teamId: "T024BE7LD", userId: "U024BE7LH", isBot },
+      output: { teamId: "T024BE7LD", userId: "U024BE7LH", isBot, userName: "boyang" },
     });
+  });
+
+  it.each([undefined, "", "  ", 42])("leaves out a missing or blank handle (%j) and keeps the identity", async (user) => {
+    const execute = slackExecutors["slack.get_current_user"];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ ok: true, team_id: "T1", user_id: "U1", user })),
+    );
+    const result = await execute!({}, { getCredential: async () => oauthCredential("user", {}, "t") });
+    expect(result).toMatchObject({ ok: true, output: { teamId: "T1", userId: "U1", isBot: false } });
+    expect((result as { output: Record<string, unknown> }).output.userName).toBeUndefined();
   });
 
   it.each([

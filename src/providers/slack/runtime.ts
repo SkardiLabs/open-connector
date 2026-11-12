@@ -229,6 +229,7 @@ export const slackCredentialValidators: CredentialValidators = {
 
 interface SlackAuthTestPayload extends SlackPayloadError {
   team?: unknown;
+  user?: unknown;
   team_id?: unknown;
   user_id?: unknown;
   bot_id?: unknown;
@@ -274,8 +275,20 @@ async function slackGetCurrentUser(context: SlackActionContext): Promise<unknown
     }
     return slackOpenIdIdentity(context);
   }
-  const identity = readSlackAuthTestIdentity(await slackAuthTest(context));
-  return { teamId: identity.teamId, userId: identity.userId, isBot: identity.botId !== undefined };
+  const payload = await slackAuthTest(context);
+  const identity = readSlackAuthTestIdentity(payload);
+  return withUserName(
+    { teamId: identity.teamId, userId: identity.userId, isBot: identity.botId !== undefined },
+    payload.user,
+  );
+}
+
+/** A display name, never an identity: a blank or non-string one is left out. */
+function withUserName<T extends object>(identity: T, ...candidates: unknown[]): T & { userName?: string } {
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) return { ...identity, userName: candidate.trim() };
+  }
+  return identity;
 }
 
 /** The trusted runtime receipt selects OpenID; a content token's scope never does. */
@@ -286,7 +299,7 @@ function isSlackIdentityGrant(metadata: Record<string, unknown>): boolean {
 
 async function slackOpenIdIdentity(
   context: Omit<SlackRequestJsonInput, "method" | "body">,
-): Promise<{ teamId: string; userId: string; isBot: false }> {
+): Promise<{ teamId: string; userId: string; isBot: false; userName?: string }> {
   const payload = await slackFormRequestJson<SlackPayloadError & Record<string, unknown>>(
     context,
     "openid.connect.userInfo",
@@ -298,7 +311,7 @@ async function slackOpenIdIdentity(
   if (!/^T[A-Z0-9]+$/u.test(teamId) || !/^[UW][A-Z0-9]+$/u.test(userId) || payload.sub !== userId) {
     throw providerResponseError("Slack OpenID identity claims do not match.");
   }
-  return { teamId, userId, isBot: false };
+  return withUserName({ teamId, userId, isBot: false as const }, payload.name, payload.email);
 }
 
 /** Read the workspace and installer from stored OAuth metadata. */
