@@ -1551,6 +1551,48 @@ it.each(["cloud_recording:read:recording", "cloud_recording:read:recording:admin
   },
 );
 
+it("starts a Zoom identity link with user:read:user alone and refuses a content scope", async () => {
+  const services = createServices([{ ...zoomProvider, actions: [] }], {
+    secretCodec: new AesGcmSecretCodec("zoom-link-test-key"),
+    database: new SqliteRuntimeDatabase(":memory:"),
+    linkReturnOrigins: ["https://gateway.example"],
+  });
+  const clientConfig = { clientId: "zoom-app", clientSecret: "zoom-secret", extra: {}, secretExtra: {} };
+  await services.connections.setOAuthCredential(
+    "zoom",
+    {
+      authType: "oauth2",
+      accessToken: "installed-token",
+      tokenType: "Bearer",
+      profile: { accountId: "KDcuGIm1QgePTO8WbOqwIQ", displayName: "Installer", grantedScopes: [] },
+      metadata: { oauthClientId: "zoom-app", oauthClientConfig: clientConfig },
+    },
+    "zoom_installed",
+  );
+  await services.clientConfigs.upsertConfig({ service: "zoom", clientId: "zoom-app", clientSecret: "zoom-secret" });
+  const linkOnly = {
+    clientFromConnection: "zoom_installed",
+    connectionAlias: "selected",
+    connectionVersionId: "accepted-version",
+    requestedScopes: ["user:read:user"],
+    returnUri: "https://gateway.example/links/zoom/callback",
+    returnState: "signed-gateway-state",
+  };
+
+  await expect(
+    services.flow.startAuthorization({
+      service: "zoom",
+      connectionName: "link_content",
+      linkOnly: { ...linkOnly, requestedScopes: ["meeting:read:summary"] },
+    }),
+  ).rejects.toMatchObject({ code: "invalid_input" });
+  const started = await services.flow.startAuthorization({ service: "zoom", connectionName: "link_zoom", linkOnly });
+  const url = new URL(started.authorizationUrl);
+  expect(url.origin + url.pathname).toBe("https://zoom.us/oauth/authorize");
+  expect(url.searchParams.get("client_id")).toBe("zoom-app");
+  expect(url.searchParams.get("scope")).toBe("user:read:user");
+});
+
 // Authored runtime fixture: validates the link transport, not live SaaS consent.
 it("reuses the installed app for identity-only consent and leaves the source binding intact", async () => {
   const provider: ProviderDefinition = {
