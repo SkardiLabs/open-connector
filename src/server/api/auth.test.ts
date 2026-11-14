@@ -51,6 +51,16 @@ describe("createLocalAuthMiddleware", () => {
       401,
     );
     expect(deleted).toHaveLength(2);
+
+    // An admin-only install has no runtime grant to accept; moving cleanup
+    // into the runtime scope must not turn its absent token into public access.
+    const adminOnly = new Hono();
+    adminOnly.use("*", createLocalAuthMiddleware({ adminToken: "admin-secret" }));
+    adminOnly.delete("/api/files/:fileId", (context) => context.json({ deleted: true }));
+    expect((await adminOnly.request(file, { method: "DELETE" })).status).toBe(401);
+    expect(
+      (await adminOnly.request(file, { method: "DELETE", headers: authorize("Bearer", "admin-secret") })).status,
+    ).toBe(200);
   });
 
   it("keeps runtime endpoints protected before creation and after revocation of the last token", async () => {
