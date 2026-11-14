@@ -62,7 +62,7 @@ export function createLocalAuthMiddleware(options: LocalAuthOptions): Middleware
   }
 
   return async (context, next) => {
-    const scope = readAuthScope(context.req.path);
+    const scope = readAuthScope(context.req.path, context.req.method);
     if (isPublicPath(context.req.path, context.req.method)) {
       await next();
       return;
@@ -90,9 +90,8 @@ export function createLocalAuthMiddleware(options: LocalAuthOptions): Middleware
       return;
     }
 
-    // Admin elevation for action runs is only available when an admin token is
-    // configured. Without that, a missing admin token must not open POST
-    // /v1/actions/* while runtime tokens/JWT are otherwise enforcing auth.
+    // Keep administrator access to action runs and transit cleanup. A missing
+    // administrator credential must not bypass runtime authentication.
     if (
       canUseAdminAuth(context.req.path, context.req.method) &&
       normalizeToken(options.adminToken) &&
@@ -279,13 +278,18 @@ function normalizeToken(token: string | undefined): string | undefined {
   return value ? value : undefined;
 }
 
-function readAuthScope(path: string): AuthScope {
+function isTransitFileDelete(path: string, method: string): boolean {
+  return method === "DELETE" && /^\/api\/files\/[^/]+$/.test(path);
+}
+
+function readAuthScope(path: string, method: string): AuthScope {
   if (isConnectionManagementPath(path)) return "admin";
+  if (isTransitFileDelete(path, method)) return "runtime";
   return path === "/mcp" || path.startsWith("/mcp/") || path === "/v1" || path.startsWith("/v1/") ? "runtime" : "admin";
 }
 
 function canUseAdminAuth(path: string, method: string): boolean {
-  return method === "POST" && /^\/v1\/actions\/[^/]+$/.test(path);
+  return isTransitFileDelete(path, method) || (method === "POST" && /^\/v1\/actions\/[^/]+$/.test(path));
 }
 
 function tokenForScope(options: LocalAuthOptions, scope: AuthScope): string | undefined {
