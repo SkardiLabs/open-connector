@@ -7,6 +7,8 @@ export const googleMeetSpaceSettingsScope = "https://www.googleapis.com/auth/mee
 export const googleMeetCreateScopes: string[] = [googleMeetSpaceCreatedScope];
 export const googleMeetReadScopes: string[] = [googleMeetSpaceReadonlyScope];
 export const googleMeetSettingsScopes: string[] = [googleMeetSpaceSettingsScope];
+/** The identity scopes Google's userinfo needs for a subject and an email address. */
+export const googleMeetCurrentUserScopes: string[] = ["openid", "email"];
 
 export const googleMeetOAuthScopes: string[] = [
   googleMeetSpaceCreatedScope,
