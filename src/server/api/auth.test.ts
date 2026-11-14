@@ -61,6 +61,18 @@ describe("createLocalAuthMiddleware", () => {
     expect(
       (await adminOnly.request(file, { method: "DELETE", headers: authorize("Bearer", "admin-secret") })).status,
     ).toBe(200);
+
+    // The server wires its token store even when authentication is disabled.
+    const authDisabled = new Hono();
+    authDisabled.use(
+      "*",
+      createLocalAuthMiddleware({
+        hasRuntimeTokens: async () => false,
+        resolveRuntimeToken: async () => undefined,
+      }),
+    );
+    authDisabled.delete("/api/files/:fileId", (context) => context.json({ deleted: true }));
+    expect((await authDisabled.request(file, { method: "DELETE" })).status).toBe(200);
   });
 
   it("keeps runtime endpoints protected before creation and after revocation of the last token", async () => {

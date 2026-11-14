@@ -197,7 +197,7 @@ async function hasValidToken(context: Context, options: LocalAuthOptions, scope:
       !options.requireRuntimeAuth &&
       !hasRuntimeTokens &&
       !options.verifyRuntimeJwt &&
-      !isTransitFileDelete(context.req.path, context.req.method)
+      (!isTransitFileDelete(context.req.path, context.req.method) || !normalizeToken(options.adminToken))
     ) {
       return true;
     }
