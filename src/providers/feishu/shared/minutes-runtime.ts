@@ -220,7 +220,7 @@ async function getMeeting(input: Record<string, unknown>, request: FeishuJsonReq
     path: `/vc/v1/meetings/${encode(meetingId)}`,
     query: {
       with_participants: input.includeParticipants === true,
-      query_mode: 0,
+      query_mode: input.queryMode === 1 ? 1 : 0,
     },
   });
   return { meeting: recordValue(data.meeting) };
