@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
+import { provider as larkProvider } from "../../lark/definition.ts";
 import { feishuActions, feishuOAuthScopesFor } from "../actions.ts";
+import { provider as feishuProvider } from "../definition.ts";
 import { createFeishuJsonRequest } from "./client.ts";
+import { feishuMeetingArtifactScopes } from "./minutes-actions.ts";
 import { createFeishuMinutesActionHandlers } from "./minutes-runtime.ts";
 
 const openBaseUrl = "https://open.feishu.cn/open-apis";
@@ -115,12 +118,24 @@ describe("Feishu video meeting records", () => {
 });
 
 describe("Feishu video meeting artifact permissions", () => {
-  it("requests the artifact field permissions at consent without requiring them for the call", () => {
+  it("keeps the artifact field permissions out of the default consent", () => {
     const action = feishuActions.find((candidate) => candidate.name === "get_vc_meeting")!;
 
     expect(action.requiredScopes).toEqual(["vc:meeting.meetingevent:read"]);
-    expect(feishuOAuthScopesFor(feishuActions)).toEqual(
-      expect.arrayContaining(["vc:meeting.artifact.note:read", "vc:meeting.artifact.verbatim:read"]),
-    );
+    expect(action.providerPermissions).toEqual(["vc:meeting.meetingevent:read"]);
+    expect(feishuMeetingArtifactScopes).toEqual(["vc:meeting.artifact.note:read", "vc:meeting.artifact.verbatim:read"]);
+    for (const scope of feishuMeetingArtifactScopes) {
+      expect(feishuOAuthScopesFor(feishuActions)).not.toContain(scope);
+    }
+  });
+
+  it("declares them optional on Feishu and Lark, so a caller can request them by name", () => {
+    for (const provider of [feishuProvider, larkProvider]) {
+      const oauth = provider.auth.find((auth) => auth.type === "oauth2")!;
+      expect(oauth.optionalScopes).toEqual(feishuMeetingArtifactScopes);
+      for (const scope of feishuMeetingArtifactScopes) {
+        expect(oauth.scopes).not.toContain(scope);
+      }
+    }
   });
 });

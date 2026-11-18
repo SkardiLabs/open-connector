@@ -2,6 +2,7 @@ import type { ProviderDefinition } from "../../core/types.ts";
 
 import { feishuOAuthScopesFor } from "../feishu/actions.ts";
 import { feishuProviderScopes } from "../feishu/scopes.ts";
+import { feishuMeetingArtifactScopes } from "../feishu/shared/minutes-actions.ts";
 import { larkActions } from "./actions.ts";
 
 const service = "lark";
@@ -27,6 +28,9 @@ export const provider: ProviderDefinition = {
       tokenUrl: "https://open.larksuite.com/open-apis/authen/v2/oauth/token",
       identityScopes: [feishuProviderScopes.userIdRead],
       scopes: feishuOAuthScopesFor(larkActions),
+      // Requestable by name, never part of the default consent: Feishu refuses
+      // an authorization naming a permission the app has not enabled.
+      optionalScopes: feishuMeetingArtifactScopes,
       tokenEndpointAuthMethod: "client_secret_post",
       // Same v2 token endpoint as Feishu: it requires an application/json body.
       tokenRequestFormat: "json",
