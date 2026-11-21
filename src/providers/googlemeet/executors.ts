@@ -17,7 +17,7 @@ import {
 } from "../googledrive/runtime-auth.ts";
 import { googleJsonRequest } from "../googledrive/runtime-request.ts";
 import { defineProviderProxy, providerProxyEndpointPrefixes } from "../provider-proxy.ts";
-import { ProviderRequestError } from "../provider-runtime.ts";
+import { ProviderRequestError, providerInputError, providerResponseError } from "../provider-runtime.ts";
 import { googleMeetApiBaseUrl, googleMeetApiOrigin, googleMeetUserInfoUrl } from "./constants.ts";
 import { googleMeetOAuthScopes } from "./scopes.ts";
 
@@ -33,6 +33,7 @@ const canonicalSpaceNameRule: ResourceNameRule = {
   expected: "canonical spaces/{space} resource ID",
 };
 const meetingCodePattern = /^[a-z]+-[a-z]+-[a-z]+$/iu;
+const rfc3339Pattern = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/u;
 const conferenceRecordNameRule: ResourceNameRule = {
   pattern: /^conferenceRecords\/[^/]+$/u,
   expected: "conferenceRecords/{conference_record}",
@@ -72,6 +73,15 @@ interface GoogleMeetRequestOptions {
   method?: string;
   query?: Record<string, string | undefined>;
   body?: unknown;
+}
+
+interface GoogleUserInfo {
+  sub?: unknown;
+  email?: unknown;
+  email_verified?: unknown;
+  name?: unknown;
+  picture?: unknown;
+  hd?: unknown;
 }
 
 interface ResourceNameRule {
@@ -144,6 +154,7 @@ export const googleMeetActionHandlers: ProviderActionHandlers<"googlemeet", Goog
   get_space: getSpace,
   update_space: updateSpace,
   end_active_conference: endActiveConference,
+  get_current_user: getCurrentUser,
   list_conference_records: listConferenceRecords,
   get_conference_record: getConferenceRecord,
   list_participants: listParticipants,
@@ -173,20 +184,13 @@ export const proxy: ProviderProxyExecutor = defineProviderProxy({
 
 export const credentialValidators: CredentialValidators = {
   async oauth2(input, { fetcher, signal }) {
-    const profile = await googleJsonRequest<{
-      email?: string;
-      name?: string;
-      sub?: string;
-    }>(googleMeetUserInfoUrl, {
-      accessToken: input.accessToken,
-      fetcher,
-      signal,
-      service,
-    });
+    const profile = await fetchGoogleUserInfo({ accessToken: input.accessToken, fetcher, signal });
+    const email = optionalString(profile.email);
+    const sub = optionalString(profile.sub);
     return {
       profile: {
-        accountId: profile.email ?? profile.sub ?? "googlemeet:oauth2",
-        displayName: profile.name ?? profile.email ?? "Google Meet User",
+        accountId: email ?? sub ?? "googlemeet:oauth2",
+        displayName: optionalString(profile.name) ?? email ?? "Google Meet User",
       },
       metadata: {
         currentAccount: profile,
@@ -237,8 +241,71 @@ async function endActiveConference(
   return { success: true };
 }
 
-function listConferenceRecords(input: Record<string, unknown>, context: GoogleMeetRuntimeContext): Promise<unknown> {
-  return listResources(input, context, conferenceRecordsListSpec);
+async function getCurrentUser(_input: Record<string, unknown>, context: GoogleMeetRuntimeContext): Promise<unknown> {
+  const profile = await fetchGoogleUserInfo(context);
+  const sub = optionalString(profile.sub);
+  if (!sub) {
+    throw providerResponseError("Google userinfo returned no subject");
+  }
+  return {
+    sub,
+    email: optionalString(profile.email) ?? null,
+    emailVerified: typeof profile.email_verified === "boolean" ? profile.email_verified : null,
+    name: optionalString(profile.name) ?? null,
+    picture: optionalString(profile.picture) ?? null,
+    hostedDomain: optionalString(profile.hd) ?? null,
+  };
+}
+
+function fetchGoogleUserInfo(
+  context: Pick<GoogleMeetRuntimeContext, "accessToken" | "fetcher" | "signal">,
+): Promise<GoogleUserInfo> {
+  return googleJsonRequest<GoogleUserInfo>(googleMeetUserInfoUrl, {
+    accessToken: context.accessToken,
+    fetcher: context.fetcher,
+    signal: context.signal,
+    service,
+  });
+}
+
+async function listConferenceRecords(
+  input: Record<string, unknown>,
+  context: GoogleMeetRuntimeContext,
+): Promise<unknown> {
+  return listResources({ ...input, filter: conferenceRecordFilter(input) }, context, conferenceRecordsListSpec);
+}
+
+/**
+ * Combine a caller filter with the startTime/endTime window, so a caller holding two
+ * window bounds does not have to spell Meet's filter grammar.
+ */
+function conferenceRecordFilter(input: Record<string, unknown>): string | undefined {
+  const clauses: string[] = [];
+  const filter = optionalString(input.filter);
+  if (filter) {
+    clauses.push(input.startTime === undefined && input.endTime === undefined ? filter : `(${filter})`);
+  }
+  const startTime = optionalRfc3339(input.startTime, "startTime");
+  if (startTime) {
+    clauses.push(`start_time>="${startTime}"`);
+  }
+  const endTime = optionalRfc3339(input.endTime, "endTime");
+  if (endTime) {
+    clauses.push(`start_time<="${endTime}"`);
+  }
+  return clauses.length > 0 ? clauses.join(" AND ") : undefined;
+}
+
+function optionalRfc3339(value: unknown, fieldName: string): string | undefined {
+  const text = optionalString(value);
+  if (text === undefined) {
+    return undefined;
+  }
+  // The value is quoted into the filter, so only a well-formed timestamp may pass.
+  if (!rfc3339Pattern.test(text) || Number.isNaN(Date.parse(text))) {
+    throw providerInputError(`${fieldName} must be an RFC 3339 date-time such as 2026-11-01T00:00:00Z`);
+  }
+  return text;
 }
 
 async function getConferenceRecord(

@@ -2,7 +2,12 @@ import type { ActionDefinition, JsonSchema } from "../../core/types.ts";
 
 import { s } from "../../core/json-schema.ts";
 import { defineProviderAction } from "../../core/provider-definition.ts";
-import { googleMeetCreateScopes, googleMeetReadScopes, googleMeetSettingsScopes } from "./scopes.ts";
+import {
+  googleMeetCreateScopes,
+  googleMeetCurrentUserScopes,
+  googleMeetReadScopes,
+  googleMeetSettingsScopes,
+} from "./scopes.ts";
 
 const service = "googlemeet";
 
@@ -291,14 +296,37 @@ const actions: GoogleMeetActionSource[] = [
   {
     name: "list_conference_records",
     operationType: "read",
-    description: "List accessible Google Meet conference records with optional filtering and pagination.",
+    description:
+      "List accessible Google Meet conference records, newest first, with an optional start-time window, filter, and pagination. The page always carries conferenceRecords, empty when nothing matches.",
     requiredScopes: googleMeetReadScopes,
     inputSchema: s.actionInput({
       filter,
+      startTime: s.dateTime(
+        'Only records that started at or after this RFC 3339 time, such as 2026-11-01T00:00:00Z. Sent as start_time>="..." and combined with filter by AND.',
+      ),
+      endTime: s.dateTime(
+        'Only records that started at or before this RFC 3339 time, such as 2026-11-08T00:00:00Z. Sent as start_time<="..." and combined with filter by AND.',
+      ),
       pageSize: s.integer("The maximum number of conference records to return.", { minimum: 1, maximum: 100 }),
       pageToken,
     }),
     outputSchema: listOutput("conferenceRecords", "Conference records in the requested page.", conferenceRecord),
+  },
+  {
+    name: "get_current_user",
+    operationType: "read",
+    description:
+      "Read the connected Google account from Google's OpenID userinfo endpoint: its stable subject ID and email address.",
+    requiredScopes: googleMeetCurrentUserScopes,
+    inputSchema: s.actionInput({}),
+    outputSchema: s.requiredObject("The connected Google account.", {
+      sub: s.string("Google's stable subject ID for the account. It never changes, unlike the email address."),
+      email: s.nullableString("The account's email address, when the email scope was granted."),
+      emailVerified: s.nullableBoolean("Whether Google verified the email address."),
+      name: s.nullableString("The account's display name, when the profile scope was granted."),
+      picture: s.nullableString("The account's profile picture URL, when the profile scope was granted."),
+      hostedDomain: s.nullableString("The Google Workspace domain of the account, when it has one."),
+    }),
   },
   {
     name: "get_conference_record",
