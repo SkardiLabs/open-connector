@@ -7,6 +7,10 @@ const microsoftTeamsProviderScopes = {
   chatRead: "Chat.Read",
   chatMessageSend: "ChatMessage.Send",
   offlineAccess: "offline_access",
+  calendarsRead: "Calendars.Read",
+  onlineMeetingsRead: "OnlineMeetings.Read",
+  onlineMeetingTranscriptReadAll: "OnlineMeetingTranscript.Read.All",
+  onlineMeetingAiInsightReadAll: "OnlineMeetingAiInsight.Read.All",
 };
 
 export const microsoftTeamsProfileScopes: string[] = [microsoftTeamsProviderScopes.userRead];
@@ -25,4 +29,21 @@ export const microsoftTeamsOAuthScopes: string[] = [
   microsoftTeamsProviderScopes.chatRead,
   microsoftTeamsProviderScopes.chatMessageSend,
   microsoftTeamsProviderScopes.offlineAccess,
+];
+export const microsoftTeamsCalendarReadScopes: string[] = [microsoftTeamsProviderScopes.calendarsRead];
+export const microsoftTeamsOnlineMeetingReadScopes: string[] = [microsoftTeamsProviderScopes.onlineMeetingsRead];
+export const microsoftTeamsTranscriptReadScopes: string[] = [
+  microsoftTeamsProviderScopes.onlineMeetingTranscriptReadAll,
+];
+export const microsoftTeamsAiInsightReadScopes: string[] = [microsoftTeamsProviderScopes.onlineMeetingAiInsightReadAll];
+
+/**
+ * Meeting-record permissions. They are optional so existing connections keep their consent:
+ * OnlineMeetingTranscript.Read.All and OnlineMeetingAiInsight.Read.All need tenant administrator consent.
+ */
+export const microsoftTeamsMeetingOptionalScopes: string[] = [
+  microsoftTeamsProviderScopes.calendarsRead,
+  microsoftTeamsProviderScopes.onlineMeetingsRead,
+  microsoftTeamsProviderScopes.onlineMeetingTranscriptReadAll,
+  microsoftTeamsProviderScopes.onlineMeetingAiInsightReadAll,
 ];
