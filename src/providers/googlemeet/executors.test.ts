@@ -236,3 +236,92 @@ describe("Google Meet proxy", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 });
+
+describe("Google Meet meeting window and identity", () => {
+  it("builds the start-time filter from startTime and endTime", async () => {
+    const fetcher: ProviderFetch = vi.fn(async (url) => {
+      const target = new URL(url);
+      expect(target.origin + target.pathname).toBe("https://meet.googleapis.com/v2/conferenceRecords");
+      expect(Object.fromEntries(target.searchParams)).toEqual({
+        filter: 'start_time>="2026-11-01T00:00:00Z" AND start_time<="2026-11-08T00:00:00Z"',
+        pageSize: "100",
+        pageToken: "page-2",
+      });
+      return Response.json({
+        conferenceRecords: [{ name: "conferenceRecords/record-1", startTime: "2026-11-02T09:00:00Z" }],
+        nextPageToken: "page-3",
+      });
+    });
+
+    await expect(
+      googleMeetActionHandlers.list_conference_records(
+        { startTime: "2026-11-01T00:00:00Z", endTime: "2026-11-08T00:00:00Z", pageSize: 100, pageToken: "page-2" },
+        { accessToken, fetcher },
+      ),
+    ).resolves.toEqual({
+      conferenceRecords: [{ name: "conferenceRecords/record-1", startTime: "2026-11-02T09:00:00Z" }],
+      nextPageToken: "page-3",
+    });
+  });
+
+  it("combines a caller filter with the window", async () => {
+    const fetcher: ProviderFetch = vi.fn(async (url) => {
+      expect(new URL(url).searchParams.get("filter")).toBe(
+        '(space.meeting_code="abc-mnop-xyz") AND start_time>="2026-11-01T00:00:00Z"',
+      );
+      return Response.json({});
+    });
+
+    await googleMeetActionHandlers.list_conference_records(
+      { filter: 'space.meeting_code="abc-mnop-xyz"', startTime: "2026-11-01T00:00:00Z" },
+      { accessToken, fetcher },
+    );
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+
+  it("answers an empty conferenceRecords array for Google's empty page", async () => {
+    const fetcher: ProviderFetch = vi.fn(async () => Response.json({}));
+
+    await expect(
+      googleMeetActionHandlers.list_conference_records(
+        { startTime: "2026-11-01T00:00:00Z", endTime: "2026-11-08T00:00:00Z" },
+        { accessToken, fetcher },
+      ),
+    ).resolves.toEqual({ conferenceRecords: [], nextPageToken: null });
+  });
+
+  it("refuses a window bound that is not an RFC 3339 time before calling Google", async () => {
+    const fetcher: ProviderFetch = vi.fn();
+
+    await expect(
+      googleMeetActionHandlers.list_conference_records(
+        { startTime: '2026-11-01T00:00:00Z" OR start_time>="1970-01-01T00:00:00Z' },
+        { accessToken, fetcher },
+      ),
+    ).rejects.toMatchObject({ status: 400 });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("reads the connected account's subject and email from userinfo", async () => {
+    const fetcher: ProviderFetch = vi.fn(async (url, init) => {
+      expect(url.toString()).toBe("https://www.googleapis.com/oauth2/v3/userinfo");
+      expect(new Headers(init?.headers).get("authorization")).toBe(`Bearer ${accessToken}`);
+      return Response.json({
+        sub: "110248495921238986420",
+        email: "meet@example.com",
+        email_verified: true,
+        name: "Meet User",
+        hd: "example.com",
+      });
+    });
+
+    await expect(googleMeetActionHandlers.get_current_user({}, { accessToken, fetcher })).resolves.toEqual({
+      sub: "110248495921238986420",
+      email: "meet@example.com",
+      emailVerified: true,
+      name: "Meet User",
+      picture: null,
+      hostedDomain: "example.com",
+    });
+  });
+});
