@@ -1,7 +1,7 @@
 import type { ProviderDefinition } from "../../core/types.ts";
 
 import { zoomActions } from "./actions.ts";
-import { zoomProviderScopes } from "./scopes.ts";
+import { zoomMeetingSummaryScopes, zoomProviderScopes, zoomUserReadScope } from "./scopes.ts";
 import { snapshot } from "./trigger-on-recording-ready.definition.ts";
 import { triggerPermissions } from "./trigger-permissions.ts";
 
@@ -21,7 +21,14 @@ export const provider: ProviderDefinition = {
       tokenUrl: "https://zoom.us/oauth/token",
       refreshTokenUrl: "https://zoom.us/oauth/token",
       scopes: zoomProviderScopes,
-      optionalScopes: ["cloud_recording:read:recording", "cloud_recording:read:recording:admin"],
+      optionalScopes: [
+        "cloud_recording:read:recording",
+        "cloud_recording:read:recording:admin",
+        ...zoomMeetingSummaryScopes,
+      ],
+      // A temporary identity proof reads the user back through get_user (GET /users/me).
+      identityScopes: [zoomUserReadScope],
+      requiredIdentityScopes: [zoomUserReadScope],
       tokenEndpointAuthMethod: "client_secret_basic",
     },
   ],

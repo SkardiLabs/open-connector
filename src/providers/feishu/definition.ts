@@ -2,6 +2,7 @@ import type { ProviderDefinition } from "../../core/types.ts";
 
 import { feishuActions, feishuOAuthScopesFor } from "./actions.ts";
 import { feishuProviderScopes } from "./scopes.ts";
+import { feishuMeetingArtifactScopes } from "./shared/minutes-actions.ts";
 
 const service = "feishu";
 const feishuOAuthScopes = feishuOAuthScopesFor(feishuActions);
@@ -24,6 +25,9 @@ export const provider: ProviderDefinition = {
       tokenUrl: "https://open.feishu.cn/open-apis/authen/v2/oauth/token",
       identityScopes: [feishuProviderScopes.userIdRead],
       scopes: feishuOAuthScopes,
+      // Requestable by name, never part of the default consent: Feishu refuses
+      // an authorization naming a permission the app has not enabled.
+      optionalScopes: feishuMeetingArtifactScopes,
       tokenEndpointAuthMethod: "client_secret_post",
       // Feishu's v2 token endpoint requires an application/json body; the
       // framework otherwise defaults to form encoding and the exchange fails.
