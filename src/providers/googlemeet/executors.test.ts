@@ -1,8 +1,13 @@
-import type { ExecutionContext, ResolvedCredential } from "../../core/types.ts";
+import type { ActionDefinition, ExecutionContext, ResolvedCredential } from "../../core/types.ts";
 import type { ProviderFetch } from "../provider-runtime.ts";
+import type { Schema } from "@cfworker/json-schema";
 
+import { Validator } from "@cfworker/json-schema";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { serializeRuntimeActionResult } from "../../server/api/runtime-api.ts";
 import { getProviderActionHandler } from "../provider-executors.ts";
+import { toProviderExecutionError } from "../provider-runtime.ts";
+import { provider } from "./definition.ts";
 import { credentialValidators, googleMeetActionHandlers, proxy } from "./executors.ts";
 
 const accessToken = "google-meet-access-token";
@@ -324,4 +329,130 @@ describe("Google Meet meeting window and identity", () => {
       hostedDomain: "example.com",
     });
   });
+});
+
+describe("Google Meet conference artifacts", () => {
+  // Constructed Meet REST v2 wire shapes, not live-account captures.
+  const recordName = "conferenceRecords/record-1";
+  const conferenceRecord = {
+    name: recordName,
+    space: "spaces/space-1",
+    startTime: "2026-11-24T09:00:00.123456Z",
+    endTime: "2026-11-24T09:45:00Z",
+    expireTime: "2026-12-24T09:45:00Z",
+  };
+  const generatedNote = {
+    name: `${recordName}/smartNotes/note-1`,
+    state: "FILE_GENERATED",
+    startTime: "2026-11-24T09:01:00Z",
+    endTime: "2026-11-24T09:44:00Z",
+    docsDestination: {
+      document: "1AbCdEfGhIjKlMnOpQrStUvWxYz",
+      exportUri: "https://docs.google.com/document/d/1AbCdEfGhIjKlMnOpQrStUvWxYz/edit",
+    },
+  };
+
+  function artifactsAction(): ActionDefinition {
+    return provider.actions.find((action) => action.name === "get_conference_artifacts")!;
+  }
+
+  it("reads the record and walks every smart-notes page", async () => {
+    const requests: URL[] = [];
+    const fetcher: ProviderFetch = vi.fn(async (url) => {
+      const target = new URL(url);
+      requests.push(target);
+      if (target.pathname === `/v2/${recordName}`) {
+        return Response.json(conferenceRecord);
+      }
+      if (!target.searchParams.has("pageToken")) {
+        return Response.json({ smartNotes: [generatedNote], nextPageToken: "notes-page-2" });
+      }
+      // A session still running has no document yet.
+      return Response.json({
+        smartNotes: [{ name: `${recordName}/smartNotes/note-2`, state: "STARTED", startTime: "2026-11-24T09:30:00Z" }],
+      });
+    });
+
+    const output = await googleMeetActionHandlers.get_conference_artifacts(
+      { name: recordName },
+      { accessToken, fetcher },
+    );
+
+    expect(output).toEqual({
+      conferenceRecord,
+      smartNotes: [
+        generatedNote,
+        { name: `${recordName}/smartNotes/note-2`, state: "STARTED", startTime: "2026-11-24T09:30:00Z" },
+      ],
+    });
+    expect(requests.map((target) => target.pathname + target.search)).toEqual([
+      `/v2/${recordName}`,
+      `/v2/${recordName}/smartNotes?pageSize=100`,
+      `/v2/${recordName}/smartNotes?pageSize=100&pageToken=notes-page-2`,
+    ]);
+    const validation = new Validator(artifactsAction().outputSchema as Schema, "2020-12").validate(output);
+    expect(validation.errors).toEqual([]);
+  });
+
+  it("answers an empty smartNotes array for a conference without notes", async () => {
+    const fetcher: ProviderFetch = vi.fn(async (url) =>
+      Response.json(new URL(url).pathname.endsWith("/smartNotes") ? {} : conferenceRecord),
+    );
+
+    await expect(
+      googleMeetActionHandlers.get_conference_artifacts({ name: recordName }, { accessToken, fetcher }),
+    ).resolves.toEqual({ conferenceRecord, smartNotes: [] });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  it("fails as a provider error instead of truncating past the page cap", async () => {
+    const fetcher: ProviderFetch = vi.fn(async (url) =>
+      Response.json(
+        new URL(url).pathname.endsWith("/smartNotes")
+          ? { smartNotes: [generatedNote], nextPageToken: "always-more" }
+          : conferenceRecord,
+      ),
+    );
+
+    await expect(
+      googleMeetActionHandlers.get_conference_artifacts({ name: recordName }, { accessToken, fetcher }),
+    ).rejects.toMatchObject({ status: 502 });
+    // The record, then ten pages of notes.
+    expect(fetcher).toHaveBeenCalledTimes(11);
+  });
+
+  it("passes an expired record's 404 through as the runtime's 404 envelope", async () => {
+    const fetcher: ProviderFetch = vi.fn(async () =>
+      Response.json(
+        { error: { code: 404, message: "Requested entity was not found.", status: "NOT_FOUND" } },
+        { status: 404 },
+      ),
+    );
+
+    const error = await googleMeetActionHandlers
+      .get_conference_artifacts({ name: recordName }, { accessToken, fetcher })
+      .catch((caught: unknown) => caught);
+
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(
+      serializeRuntimeActionResult({
+        actionId: "googlemeet.get_conference_artifacts",
+        executionId: "fixture-execution",
+        auditPersisted: false,
+        result: toProviderExecutionError(error, "fixture request failed"),
+      }),
+    ).toMatchObject({ status: 404, body: { success: false, errorCode: "invalid_input", data: { status: 404 } } });
+  });
+
+  it.each(["spaces/space-1", `${recordName}/participants/person-1`, "conferenceRecords/../record-1"])(
+    "refuses %s as a conference record name before any request",
+    async (name) => {
+      const fetcher: ProviderFetch = vi.fn();
+
+      await expect(
+        googleMeetActionHandlers.get_conference_artifacts({ name }, { accessToken, fetcher }),
+      ).rejects.toMatchObject({ status: 400 });
+      expect(fetcher).not.toHaveBeenCalled();
+    },
+  );
 });

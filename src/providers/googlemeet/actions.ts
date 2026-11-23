@@ -337,6 +337,18 @@ const actions: GoogleMeetActionSource[] = [
     outputSchema: conferenceRecord,
   },
   {
+    name: "get_conference_artifacts",
+    operationType: "read",
+    description:
+      "Retrieve one Google Meet conference record together with every smart-note session generated for it. Smart notes point at the Google Docs document that holds the notes; smartNotes is empty when the conference has none.",
+    requiredScopes: googleMeetReadScopes,
+    inputSchema: conferenceRecordNameInput,
+    outputSchema: s.requiredObject("A Google Meet conference record and its smart notes.", {
+      conferenceRecord,
+      smartNotes: s.array("Every smart-note session of the conference, oldest first.", smartNote),
+    }),
+  },
+  {
     name: "list_participants",
     operationType: "read",
     description: "List participants in a Google Meet conference record.",

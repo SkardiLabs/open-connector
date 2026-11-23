@@ -157,6 +157,7 @@ export const googleMeetActionHandlers: ProviderActionHandlers<"googlemeet", Goog
   get_current_user: getCurrentUser,
   list_conference_records: listConferenceRecords,
   get_conference_record: getConferenceRecord,
+  get_conference_artifacts: getConferenceArtifacts,
   list_participants: listParticipants,
   get_participant: getParticipant,
   list_participant_sessions: listParticipantSessions,
@@ -313,6 +314,38 @@ async function getConferenceRecord(
   context: GoogleMeetRuntimeContext,
 ): Promise<unknown> {
   return getResource(input.name, conferenceRecordNameRule, context);
+}
+
+/**
+ * A conference gets one smart-notes session each time someone turns on Take notes with Gemini, so a
+ * real meeting has a handful. Ten pages of 100 is far beyond that; a record that still has more is a
+ * provider error, never a silently truncated list.
+ */
+const conferenceArtifactMaxPages = 10;
+
+async function getConferenceArtifacts(
+  input: Record<string, unknown>,
+  context: GoogleMeetRuntimeContext,
+): Promise<unknown> {
+  const name = resolveResourceName(input.name, conferenceRecordNameRule);
+  const recordUrl = `${googleMeetApiBaseUrl}/${encodeResourceName(name)}`;
+  const conferenceRecord = await googleMeetJsonRequest(recordUrl, { context });
+  const smartNotes: unknown[] = [];
+  let pageToken: string | undefined;
+  for (let page = 0; page < conferenceArtifactMaxPages; page += 1) {
+    const payload = await googleMeetJsonRequest<GoogleMeetListPayload>(`${recordUrl}/smartNotes`, {
+      context,
+      query: compactObject({ pageSize: "100", pageToken }),
+    });
+    smartNotes.push(...looseArray(payload.smartNotes));
+    pageToken = optionalString(payload.nextPageToken);
+    if (!pageToken) {
+      return { conferenceRecord, smartNotes };
+    }
+  }
+  throw providerResponseError(
+    `Google Meet returned more than ${conferenceArtifactMaxPages} pages of smart notes for ${name}`,
+  );
 }
 
 function listParticipants(input: Record<string, unknown>, context: GoogleMeetRuntimeContext): Promise<unknown> {
