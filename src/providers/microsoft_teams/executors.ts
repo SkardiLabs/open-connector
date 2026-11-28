@@ -1,15 +1,25 @@
 import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
 import type { OAuthProviderContext, ProviderActionHandlers } from "../provider-executors.ts";
 
-import { looseArray, optionalNumber, optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
+import {
+  looseArray,
+  optionalNumber,
+  optionalRecord,
+  optionalString,
+  recordOrEmpty,
+  requiredString,
+} from "../../core/cast.ts";
 import { compactJson, encodePathSegment } from "../../core/request.ts";
-import { microsoftGraphJson } from "../outlook/microsoft-graph.ts";
+import { microsoftGraphJson, microsoftGraphRequest } from "../outlook/microsoft-graph.ts";
 import { defineOAuthProviderExecutors } from "../provider-executors.ts";
 import { defineProviderProxy } from "../provider-proxy.ts";
-import { requiredInputString } from "../provider-runtime.ts";
+import { readProviderTextBody, requiredInputString } from "../provider-runtime.ts";
 
 const service = "microsoft_teams";
 const graphBaseUrl = "https://graph.microsoft.com/v1.0";
+// The calendar fields a meeting record needs: the occurrence, its times, people, series, and join URL.
+const calendarEventSelect =
+  "id,iCalUId,subject,start,end,isOnlineMeeting,onlineMeeting,seriesMasterId,organizer,attendees";
 
 type Handler = (input: Record<string, unknown>, context: OAuthProviderContext) => Promise<unknown>;
 
@@ -53,6 +63,21 @@ const handlers: ProviderActionHandlers<"microsoft_teams", Handler> = {
   },
   send_chat_message(input, context) {
     return sendChatMessage(input, context);
+  },
+  list_calendar_view(input, context) {
+    return listCalendarView(input, context);
+  },
+  get_online_meeting_by_join_url(input, context) {
+    return getOnlineMeetingByJoinUrl(input, context);
+  },
+  list_meeting_transcripts(input, context) {
+    return listMeetingTranscripts(input, context);
+  },
+  get_transcript_content(input, context) {
+    return getTranscriptContent(input, context);
+  },
+  list_meeting_ai_insights(input, context) {
+    return listMeetingAiInsights(input, context);
   },
 };
 
@@ -228,6 +253,134 @@ async function sendChatMessage(input: Record<string, unknown>, context: OAuthPro
   );
 }
 
+async function listCalendarView(input: Record<string, unknown>, context: OAuthProviderContext): Promise<unknown> {
+  const nextLink = optionalString(input.nextLink);
+  const payload = await microsoftGraphJson<Record<string, unknown>>(nextLink ?? "me/calendarView", {
+    ...requestOptions(
+      context,
+      "list calendar view",
+      nextLink
+        ? undefined
+        : {
+            startDateTime: requiredInputString(input.startDateTime, "startDateTime"),
+            endDateTime: requiredInputString(input.endDateTime, "endDateTime"),
+            $select: calendarEventSelect,
+            $top: optionalNumber(input.top)?.toString(),
+          },
+      allowCalendarViewNextLink,
+    ),
+    // Event times in UTC on every page, so a window caller never parses a mailbox time zone.
+    headers: { prefer: 'outlook.timezone="UTC"' },
+  });
+  return listOutput(payload, "events");
+}
+
+async function getOnlineMeetingByJoinUrl(
+  input: Record<string, unknown>,
+  context: OAuthProviderContext,
+): Promise<unknown> {
+  const joinUrl = requiredInputString(input.joinUrl, "joinUrl");
+  const payload = await microsoftGraphJson<Record<string, unknown>>(
+    "me/onlineMeetings",
+    requestOptions(context, "get online meeting by join URL", {
+      // OData string literals escape a quote by doubling it.
+      $filter: `JoinWebUrl eq '${joinUrl.replaceAll("'", "''")}'`,
+    }),
+  );
+  return { onlineMeeting: looseArray(payload.value)[0] ?? null };
+}
+
+async function listMeetingTranscripts(input: Record<string, unknown>, context: OAuthProviderContext): Promise<unknown> {
+  const meeting = requiredInputString(input.onlineMeetingId, "onlineMeetingId");
+  const payload = await microsoftGraphJson<Record<string, unknown>>(
+    optionalString(input.nextLink) ?? `me/onlineMeetings/${encodePathSegment(meeting)}/transcripts`,
+    requestOptions(context, "list meeting transcripts", undefined, allowTranscriptNextLink),
+  );
+  return listOutput(payload, "transcripts");
+}
+
+async function getTranscriptContent(input: Record<string, unknown>, context: OAuthProviderContext): Promise<unknown> {
+  const meeting = requiredInputString(input.onlineMeetingId, "onlineMeetingId");
+  const transcriptId = requiredInputString(input.transcriptId, "transcriptId");
+  const response = await microsoftGraphRequest(
+    `me/onlineMeetings/${encodePathSegment(meeting)}/transcripts/${encodePathSegment(transcriptId)}/content`,
+    {
+      ...requestOptions(context, "get transcript content", { $format: "text/vtt" }),
+      headers: { accept: "text/vtt" },
+    },
+  );
+  return {
+    contentType: "text/vtt",
+    content: await readProviderTextBody(response, "Microsoft Teams transcript content", undefined, context.signal),
+  };
+}
+
+async function listMeetingAiInsights(input: Record<string, unknown>, context: OAuthProviderContext): Promise<unknown> {
+  const meeting = requiredInputString(input.onlineMeetingId, "onlineMeetingId");
+  const nextLink = optionalString(input.nextLink);
+  const userId = nextLink ? "" : (optionalString(input.userId) ?? (await currentUserId(context)));
+  const insightsPath = `copilot/users/${encodePathSegment(userId)}/onlineMeetings/${encodePathSegment(meeting)}/aiInsights`;
+  const payload = await microsoftGraphJson<Record<string, unknown>>(
+    nextLink ?? insightsPath,
+    requestOptions(context, "list meeting AI insights", undefined, allowAiInsightNextLink),
+  );
+  // The list answers only each insight's identity; its notes and action items come from the item read.
+  const insights = [];
+  for (const summary of looseArray(payload.value)) {
+    const id = requiredString(optionalRecord(summary)?.id, "Microsoft Teams AI insight id");
+    const itemPath = nextLink
+      ? `${new URL(nextLink).pathname.replace(/^\/v1\.0\//u, "")}/${encodePathSegment(id)}`
+      : `${insightsPath}/${encodePathSegment(id)}`;
+    const insight = await microsoftGraphJson<Record<string, unknown>>(
+      itemPath,
+      requestOptions(context, "get meeting AI insight"),
+    );
+    insights.push(normalizeAiInsight(insight));
+  }
+  return {
+    insights,
+    nextLink: optionalString(payload["@odata.nextLink"]) ?? null,
+  };
+}
+
+async function currentUserId(context: OAuthProviderContext): Promise<string> {
+  const profile = await microsoftGraphJson<Record<string, unknown>>(
+    "me",
+    requestOptions(context, "get current user", { $select: "id" }),
+  );
+  return requiredString(profile.id, "Microsoft Teams current account id");
+}
+
+function normalizeAiInsight(insight: Record<string, unknown>): Record<string, unknown> {
+  return {
+    id: requiredString(insight.id, "Microsoft Teams AI insight id"),
+    callId: optionalString(insight.callId) ?? null,
+    contentCorrelationId: optionalString(insight.contentCorrelationId) ?? null,
+    createdDateTime: optionalString(insight.createdDateTime) ?? null,
+    endDateTime: optionalString(insight.endDateTime) ?? null,
+    meetingNotes: looseArray(insight.meetingNotes).map((value) => {
+      const note = recordOrEmpty(value);
+      return {
+        title: optionalString(note.title) ?? null,
+        text: optionalString(note.text) ?? null,
+        subpoints: looseArray(note.subpoints).map((subpoint) => ({
+          title: optionalString(recordOrEmpty(subpoint).title) ?? null,
+          text: optionalString(recordOrEmpty(subpoint).text) ?? null,
+        })),
+      };
+    }),
+    actionItems: looseArray(insight.actionItems).map((value) => {
+      const item = recordOrEmpty(value);
+      return {
+        title: optionalString(item.title) ?? null,
+        text: optionalString(item.text) ?? null,
+        ownerDisplayName: optionalString(item.ownerDisplayName) ?? null,
+      };
+    }),
+    viewpoint: optionalRecord(insight.viewpoint) ?? null,
+  };
+}
+
 function requestOptions(
   context: OAuthProviderContext,
   operation: string,
@@ -311,4 +464,37 @@ function allowChannelMessageNextLink(pathname: string): boolean {
 function allowChatMessageNextLink(pathname: string): boolean {
   const segments = pathname.split("/").filter(Boolean);
   return segments.length === 4 && segments[0] === "v1.0" && segments[1] === "chats" && segments[3] === "messages";
+}
+
+/** A calendarView continuation, which Graph may address through /me or through /users/{id}. */
+function allowCalendarViewNextLink(pathname: string): boolean {
+  const segments = pathname.split("/").filter(Boolean);
+  const last = segments.at(-1)?.toLowerCase();
+  return (
+    last === "calendarview" &&
+    segments[0] === "v1.0" &&
+    ((segments.length === 3 && segments[1] === "me") || (segments.length === 4 && segments[1] === "users"))
+  );
+}
+
+function allowTranscriptNextLink(pathname: string): boolean {
+  const segments = pathname.split("/").filter(Boolean);
+  return (
+    segments[0] === "v1.0" &&
+    ((segments.length === 5 && segments[1] === "me" && segments[2] === "onlineMeetings") ||
+      (segments.length === 6 && segments[1] === "users" && segments[3] === "onlineMeetings")) &&
+    segments.at(-1) === "transcripts"
+  );
+}
+
+function allowAiInsightNextLink(pathname: string): boolean {
+  const segments = pathname.split("/").filter(Boolean);
+  return (
+    segments.length === 7 &&
+    segments[0] === "v1.0" &&
+    segments[1] === "copilot" &&
+    segments[2] === "users" &&
+    segments[4] === "onlineMeetings" &&
+    segments[6] === "aiInsights"
+  );
 }
